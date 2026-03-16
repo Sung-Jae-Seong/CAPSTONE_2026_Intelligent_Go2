@@ -6,6 +6,7 @@ import threading
 import time
 from collections import deque
 from enum import Enum
+from unitree_api.msg import Request # TODO Check the Code
 
 import numpy as np
 import rclpy
@@ -49,7 +50,7 @@ odom_rw_lock = ReadWriteLock()
 mpc_rw_lock = ReadWriteLock()
 
 
-def dual_sys_eval(image_bytes, depth_bytes, front_image_bytes, url='http://127.0.0.1:5801/eval_dual'):
+def dual_sys_eval(image_bytes, depth_bytes, front_image_bytes, url='http://192.168.0.224:5801/eval_dual'):
     global policy_init, http_idx, first_running_time
     data = {"reset": policy_init, "idx": http_idx}
     json_data = json.dumps(data)
@@ -200,17 +201,18 @@ class Go2Manager(Node):
     def __init__(self):
         super().__init__('go2_manager')
 
-        rgb_down_sub = Subscriber(self, Image, "/camera/camera/color/image_raw")
-        depth_down_sub = Subscriber(self, Image, "/camera/camera/aligned_depth_to_color/image_raw")
+        rgb_down_sub = Subscriber(self, Image, "/camera/color/image_raw")
+        depth_down_sub = Subscriber(self, Image, "/camera/aligned_depth_to_color/image_raw")
 
         qos_profile = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT, history=HistoryPolicy.KEEP_LAST, depth=10)
 
         self.syncronizer = ApproximateTimeSynchronizer([rgb_down_sub, depth_down_sub], 1, 0.1)
         self.syncronizer.registerCallback(self.rgb_depth_down_callback)
-        self.odom_sub = self.create_subscription(Odometry, "/odom_bridge", self.odom_callback, qos_profile)
+        self.odom_sub = self.create_subscription(Odometry, "/utlidar/robot_odom", self.odom_callback, qos_profile)
 
         # publisher
-        self.control_pub = self.create_publisher(Twist, '/cmd_vel_bridge', 5)
+        # self.control_pub = self.create_publisher(Twist, '/cmd_vel_bridge', 5) TODO : Check the error
+        self.control_pub = self.create_publisher(Request, '/api/sport/request', 10)
 
         # class member variable
         self.cv_bridge = CvBridge()
@@ -332,14 +334,23 @@ class Go2Manager(Node):
                 homo_goal[:3, :3] = np.dot(rotation_matrix, homo_goal[:3, :3])
         self.homo_goal = homo_goal
 
+    # def move(self, vx, vy, vyaw): # TODO Check th code
+    #     request = Twist()
+    #     request.linear.x = vx
+    #     request.linear.y = 0.0
+    #     request.angular.z = vyaw
+
+    #     self.control_pub.publish(request)
+
     def move(self, vx, vy, vyaw):
-        request = Twist()
-        request.linear.x = vx
-        request.linear.y = 0.0
-        request.angular.z = vyaw
-
-        self.control_pub.publish(request)
-
+        req = Request()
+        req.header.identity.api_id = 1008
+        req.parameter = json.dumps({
+            "x": float(vx),
+            "y": float(vy),
+            "z": float(vyaw),
+        })
+        self.control_pub.publish(req)
 
 if __name__ == '__main__':
     control_thread_instance = threading.Thread(target=control_thread)

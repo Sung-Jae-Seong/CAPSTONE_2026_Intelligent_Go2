@@ -61,6 +61,9 @@ def chunk_token(dp_actions):
 
 
 def traj_to_actions(dp_actions, use_discrate_action=True):
+    if isinstance(dp_actions, torch.Tensor):
+        dp_actions = dp_actions.clone()
+
     def reconstruct_xy_from_delta(delta_xyt):
         """
         Input:

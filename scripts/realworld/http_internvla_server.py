@@ -81,21 +81,29 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--device", type=str, default="cuda:0")
-    parser.add_argument("--model_path", type=str, default="checkpoints/InternVLA-N1")
+    parser.add_argument("--model_path", type=str, default="/home/tenstorrent/workspace/internVLA/InternNav/checkpoints/InternVLA-N1-DualVLN")
     parser.add_argument("--resize_w", type=int, default=384)
     parser.add_argument("--resize_h", type=int, default=384)
     parser.add_argument("--num_history", type=int, default=8)
+    parser.add_argument("--plan_step_gap", type=int, default=1)
     args = parser.parse_args()
 
     args.camera_intrinsic = np.array(
-        [[386.5, 0.0, 328.9, 0.0], [0.0, 386.5, 244, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]]
+        [
+        [905.1950073242188, 0.0, 670.1882934570312, 0.0],
+        [0.0, 904.0057373046875, 385.49102783203125, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+        ],
+        dtype=np.float32,
     )
     agent = InternVLAN1AsyncAgent(args)
     agent.step(
-        np.zeros((480, 640, 3)),
-        np.zeros((480, 640)),
-        np.eye(4),
+        np.zeros((480, 640, 3), dtype=np.uint8),
+        np.zeros((480, 640), dtype=np.float32),
+        np.eye(4, dtype=np.float32),
         "hello",
+        intrinsic=args.camera_intrinsic,
     )
     agent.reset()
 
