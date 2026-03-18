@@ -8,7 +8,7 @@ from InternVLA : https://github.com/InternRobotics/InternNav
 ```bash
 
 git clone https://github.com/InternRobotics/InternNav.git --recursive
-conda create -n internnav python=3.10 libxcb=1.14
+conda create -n internnav python=3.10
 conda activate internnav
 
 pip install -U pip setuptools==80.9.0 wheel packaging ninja
