@@ -26,6 +26,8 @@ from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from thread_utils import ReadWriteLock
 
+from logger import Logger
+from rclpy.executors import MultiThreadedExecutor
 
 class ControlMode(Enum):
     PID_Mode = 1
@@ -50,7 +52,7 @@ odom_rw_lock = ReadWriteLock()
 mpc_rw_lock = ReadWriteLock()
 
 
-def dual_sys_eval(image_bytes, depth_bytes, front_image_bytes, url='http://192.168.0.224:5801/eval_dual'):
+def dual_sys_eval(image_bytes, depth_bytes, front_image_bytes, url='http://192.168.0.60:5801/eval_dual'):
     global policy_init, http_idx, first_running_time
     data = {"reset": policy_init, "idx": http_idx}
     json_data = json.dumps(data)
@@ -365,7 +367,21 @@ if __name__ == '__main__':
         control_thread_instance.start()
         planning_thread_instance.start()
 
-        rclpy.spin(manager)
+        log = Logger("/home/unitree/jiwon/InternNav/logs")
+        log.set_ros2_topic("/camera/color/image_raw", "sensor_msgs/msg/Image", hz=1.0, raw=True)
+        log.set_ros2_topic("/camera/aligned_depth_to_color/image_raw", "sensor_msgs/msg/Image", hz=1.0, raw=True)
+        log.set_ros2_topic("/utlidar/robot_odom", "nav_msgs/msg/Odometry", hz=10.0)
+
+        log.set_ros2_topic("/lowstate", "unitree_go/msg/LowState", hz=10.0)
+        log.set_ros2_topic("/sportmodestate", "unitree_go/msg/SportModeState", hz=10.0)
+        log.set_ros2_topic("/utlidar/robot_pose", "geometry_msgs/msg/PoseStamped", hz=10.0)
+        log.set_ros2_topic("/utlidar/cloud", "sensor_msgs/msg/PointCloud2", hz=2.0, raw=True)
+        log.logging_start()
+
+        executor = MultiThreadedExecutor(num_threads=4)
+        executor.add_node(manager)
+        executor.add_node(log)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
