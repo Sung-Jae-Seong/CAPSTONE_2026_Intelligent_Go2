@@ -90,17 +90,18 @@ class Logger(Node):
         prefix = self._topic_to_filename_prefix(topic_name)
         topic_dir = os.path.join(self.save_dir, prefix)
         os.makedirs(topic_dir, exist_ok=True)
-
+    
         with self.db_lock:
             idx = self.file_index.get(topic_name, 0)
             self.file_index[topic_name] = idx + 1
-
+    
         file_path = os.path.join(topic_dir, f"{prefix}_{idx}")
-
+    
         with open(file_path, "wb") as f:
             f.write(serialize_message(msg))
-
-        return file_path
+    
+        rel_path = os.path.relpath(file_path, self.logging_path)
+        return rel_path
 
     def write_log(self, name, type_, data, hz=None):
         if self.conn is None:
