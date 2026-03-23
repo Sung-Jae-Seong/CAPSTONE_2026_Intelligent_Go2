@@ -6,8 +6,11 @@ import threading
 import time
 from collections import deque
 from enum import Enum
-from unitree_api.msg import Request # TODO Check the Code
-
+from unitree_api.msg import Request
+import os
+import signal
+import subprocess
+import time
 import numpy as np
 import rclpy
 import requests
@@ -213,8 +216,7 @@ class Go2Manager(Node):
         self.odom_sub = self.create_subscription(Odometry, "/utlidar/robot_odom", self.odom_callback, qos_profile)
 
         # publisher
-        # self.control_pub = self.create_publisher(Twist, '/cmd_vel_bridge', 5) TODO : Check the error
-        self.control_pub = self.create_publisher(Request, '/api/sport/request', 10)
+        self.control_pub = self.create_publisher(Request, '/api/sport/request', 5)
 
         # class member variable
         self.cv_bridge = CvBridge()
@@ -336,14 +338,6 @@ class Go2Manager(Node):
                 homo_goal[:3, :3] = np.dot(rotation_matrix, homo_goal[:3, :3])
         self.homo_goal = homo_goal
 
-    # def move(self, vx, vy, vyaw): # TODO Check th code
-    #     request = Twist()
-    #     request.linear.x = vx
-    #     request.linear.y = 0.0
-    #     request.angular.z = vyaw
-
-    #     self.control_pub.publish(request)
-
     def move(self, vx, vy, vyaw):
         req = Request()
         req.header.identity.api_id = 1008
@@ -355,6 +349,7 @@ class Go2Manager(Node):
         self.control_pub.publish(req)
 
 if __name__ == '__main__':
+    bridge_proc = None
     control_thread_instance = threading.Thread(target=control_thread)
     planning_thread_instance = threading.Thread(target=planning_thread)
     control_thread_instance.daemon = True
@@ -362,6 +357,19 @@ if __name__ == '__main__':
     rclpy.init()
 
     try:
+        bridge_proc = subprocess.Popen(
+            [
+                "zenoh-bridge-ros2dds",
+                "-c",
+                "/home/unitree/zenoh_bridge/bridge_robot.json5",
+                "--rest-http-port",
+                "8000",
+            ],
+            cwd="/home/unitree/zenoh_bridge",
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.STDOUT,
+            preexec_fn=os.setsid,
+        )
         manager = Go2Manager()
 
         control_thread_instance.start()
@@ -373,9 +381,6 @@ if __name__ == '__main__':
         log.set_ros2_topic("/utlidar/robot_odom", "nav_msgs/msg/Odometry", hz=10.0)
 
         log.set_ros2_topic("/lowstate", "unitree_go/msg/LowState", hz=10.0)
-        log.set_ros2_topic("/sportmodestate", "unitree_go/msg/SportModeState", hz=10.0)
-        log.set_ros2_topic("/utlidar/robot_pose", "geometry_msgs/msg/PoseStamped", hz=10.0)
-        log.set_ros2_topic("/utlidar/cloud", "sensor_msgs/msg/PointCloud2", hz=2.0, raw=True)
         log.logging_start()
 
         executor = MultiThreadedExecutor(num_threads=4)
@@ -387,3 +392,6 @@ if __name__ == '__main__':
     finally:
         manager.destroy_node()
         rclpy.shutdown()
+        if bridge_proc is not None:
+            os.killpg(os.getpgid(bridge_proc.pid), signal.SIGTERM)
+            bridge_proc.wait()
