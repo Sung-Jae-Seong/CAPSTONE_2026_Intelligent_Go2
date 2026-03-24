@@ -90,29 +90,38 @@ class Logger(Node):
         prefix = self._topic_to_filename_prefix(topic_name)
         topic_dir = os.path.join(self.save_dir, prefix)
         os.makedirs(topic_dir, exist_ok=True)
-    
+
         with self.db_lock:
             idx = self.file_index.get(topic_name, 0)
             self.file_index[topic_name] = idx + 1
-    
+
         file_path = os.path.join(topic_dir, f"{prefix}_{idx}")
-    
+
         with open(file_path, "wb") as f:
             f.write(serialize_message(msg))
-    
+
         rel_path = os.path.relpath(file_path, self.logging_path)
         return rel_path
 
-    def write_log(self, name, type_, data, hz=None):
+    def _should_log(self, name, hz):
+        if hz is None:
+            return True
+
+        now = time.monotonic()
+
+        with self.db_lock:
+            prev = self.prev_time.get(name, 0.0)
+            if now - prev < 1.0 / hz:
+                return False
+            self.prev_time[name] = now
+
+        return True
+
+    def write_log(self, name, type_, data):
         if self.conn is None:
             return
 
         now = time.monotonic()
-
-        if hz is not None:
-            prev = self.prev_time.get(name, 0.0)
-            if now - prev < 1.0 / hz:
-                return
 
         row = (
             name,
@@ -123,7 +132,6 @@ class Logger(Node):
 
         with self.db_lock:
             self.buffer.append(row)
-            self.prev_time[name] = now
 
             if len(self.buffer) >= self.batch_size or now - self.last_flush_time >= self.flush_interval:
                 self.cursor.executemany("""
@@ -170,6 +178,9 @@ class Logger(Node):
             self.raw_topic_names.add(topic_name)
 
         def callback(msg):
+            if not self._should_log(topic_name, hz):
+                return
+
             if topic_name in self.raw_topic_names:
                 data = self._save_raw_message(topic_name, msg)
             else:
@@ -178,8 +189,7 @@ class Logger(Node):
             self.write_log(
                 name=topic_name,
                 type_=topic_type_str,
-                data=data,
-                hz=hz
+                data=data
             )
 
         sub = self.create_subscription(
