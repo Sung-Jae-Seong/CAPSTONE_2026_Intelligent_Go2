@@ -49,8 +49,7 @@ class Logger(Node):
                 data={
                     "timestamp": timestamp,
                     "message": msg
-                },
-                hz=None
+                }
             )
 
     def logging_start(self):
