@@ -102,7 +102,6 @@ class InternVLAN1AsyncAgent:
 
         self.save_dir = "test_data/" + datetime.now().strftime("%Y%m%d_%H%M%S")
         os.makedirs(self.save_dir, exist_ok=True)
-        self.last_output_ids = None
         self.input_images = []
         torch.cuda.empty_cache()
 
@@ -153,13 +152,13 @@ class InternVLAN1AsyncAgent:
             rgbs = (
                 torch.stack([torch.from_numpy(processed_pixel_rgb), torch.from_numpy(processed_rgb)])
                 .unsqueeze(0)
-                .to(self.device, dtype=torch.bfloat16)
+                .to(self.device)
             )
             depths = (
                 torch.stack([torch.from_numpy(processed_pixel_depth), torch.from_numpy(processed_depth)])
                 .unsqueeze(0)
                 .unsqueeze(-1)
-                .to(self.device, dtype=torch.bfloat16)
+                .to(self.device)
             )
             trajectories = self.step_s1(self.output_latent, rgbs, depths)
             self.output_latent = None
@@ -180,7 +179,7 @@ class InternVLAN1AsyncAgent:
             self.past_key_values = None
 
             sources = copy.deepcopy(self.conversation)
-            sources[0]["value"] = sources[0]["value"].replace('<instruction>.', instruction)
+            sources[0]["value"] = sources[0]["value"].replace('<instruction>', instruction)
             cur_images = self.rgb_list[-1:]
             if self.episode_idx == 0:
                 history_id = []
@@ -202,7 +201,7 @@ class InternVLAN1AsyncAgent:
                 {'role': 'assistant', 'content': [{'type': 'text', 'text': self.llm_output}]}
             )
 
-        prompt = self.conjunctions[0] + DEFAULT_IMAGE_TOKEN
+        prompt = self.conjunctions[-1] + DEFAULT_IMAGE_TOKEN
         sources[0]["value"] += f" {prompt}."
         prompt_instruction = copy.deepcopy(sources[0]["value"])
         parts = split_and_clean(prompt_instruction)
@@ -234,12 +233,15 @@ class InternVLAN1AsyncAgent:
         self.llm_output = self.processor.tokenizer.decode(
             output_ids[0][inputs.input_ids.shape[1] :], skip_special_tokens=True
         )
+        is_pixel_goal = bool(re.search(r'\d', self.llm_output))
+        if not is_pixel_goal and self.llm_output != 'STOP':
+            self.llm_output = self.llm_output[0]
         with open(f"{self.save_dir}/llm_output_{self.episode_idx: 04d}.txt", 'w') as f:
             f.write(self.llm_output)
-        self.last_output_ids = None
-        self.past_key_values = None
+        self.last_output_ids = copy.deepcopy(output_ids[0])
+        self.past_key_values = copy.deepcopy(outputs.past_key_values)
         print(f"output {self.episode_idx}  {self.llm_output} cost: {t1 - t0}s")
-        if bool(re.search(r'\d', self.llm_output)):
+        if is_pixel_goal:
             coord = [int(c) for c in re.findall(r'\d+', self.llm_output)]
             pixel_goal = [int(coord[1]), int(coord[0])]
             image_grid_thw = torch.cat([thw.unsqueeze(0) for thw in inputs.image_grid_thw], dim=0)
@@ -260,7 +262,7 @@ class InternVLAN1AsyncAgent:
             return action_seq, None, None
 
     def step_s1(self, latent, rgb, depth):
-        latent = latent.to(self.device, dtype=torch.bfloat16, non_blocking=True)
+        latent = latent.to(self.device, non_blocking=True)
         with torch.inference_mode():
             all_trajs = self.model.generate_traj(latent, rgb, depth)
         return all_trajs
