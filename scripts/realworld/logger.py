@@ -11,10 +11,10 @@ import rclpy
 from rclpy.node import Node
 from rosidl_runtime_py.utilities import get_message
 from rclpy.serialization import serialize_message
-
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 
 class Logger(Node):
-    def __init__(self, logging_path, hz=30.0, batch_size=100, flush_interval=5.0):
+    def __init__(self, logging_path, hz=10.0, batch_size=100, flush_interval=5.0):
         super().__init__("logging_node")
 
         self.prev_time = {}
@@ -35,6 +35,22 @@ class Logger(Node):
         self.save_dir = None
         self.file_index = {}
         self.raw_topic_names = set()
+        self.dummy_publishers = {}
+
+    def add_dummy_publisher(self, topic_name, topic_type_str, qos_profile=None):
+        msg_type = get_message(topic_type_str)
+
+        if qos_profile is None:
+            qos_profile = QoSProfile(
+                reliability=ReliabilityPolicy.RELIABLE,
+                durability=DurabilityPolicy.VOLATILE,
+                history=HistoryPolicy.KEEP_LAST,
+                depth=10,
+            )
+
+        pub = self.create_publisher(msg_type, topic_name, qos_profile)
+        self.dummy_publishers[topic_name] = pub
+        print(f"dummy publisher created: {topic_name} [{topic_type_str}]")
 
     def _log_print(self, *args, **kwargs):
         msg = " ".join(str(arg) for arg in args)
