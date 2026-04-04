@@ -18,6 +18,7 @@ from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from PIL import Image as PIL_Image
 from sensor_msgs.msg import Image
+import cv2
 
 frame_data = {}
 frame_idx = 0
@@ -29,7 +30,7 @@ from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from thread_utils import ReadWriteLock
 
-from logger import Logger
+#from logger import Logger
 from rclpy.executors import MultiThreadedExecutor
 
 class ControlMode(Enum):
@@ -54,6 +55,12 @@ rgb_depth_rw_lock = ReadWriteLock()
 odom_rw_lock = ReadWriteLock()
 mpc_rw_lock = ReadWriteLock()
 
+####### Slowdown
+ENABLE_BLUR_FILTER = False
+TRAJ_SLOWDOWN_FACTOR = 4
+# TRAJ_SLOWDOWN_FACTOR = 1
+ROTATE_STEP_DEG = 20.0
+####### Slowdown
 
 def dual_sys_eval(image_bytes, depth_bytes, front_image_bytes, url='http://192.168.0.60:5801/eval_dual'):
     global policy_init, http_idx, first_running_time
@@ -98,13 +105,30 @@ def control_thread():
             homo_odom = manager.homo_odom.copy() if manager.homo_odom is not None else None
             vel = manager.vel.copy() if manager.vel is not None else None
             homo_goal = manager.homo_goal.copy() if manager.homo_goal is not None else None
-
+			
+			
             if homo_odom is not None and vel is not None and homo_goal is not None:
                 v, w, e_p, e_r = pid.solve(homo_odom, homo_goal, vel)
+                
+                # 현재 오차 상태를 확인하기 위한 디버깅 로그
+                print(f"Current Error -> e_p: {abs(e_p):.3f}, e_r: {abs(e_r):.3f}")
+                
+                # --------------------------------------------------------
+                # 추가된 로직: 정지 마찰력 극복을 위한 최소 각속도 보장 (Deadband 보상)
+                MIN_W = 0.35  # 로봇이 실제로 회전하기 시작하는 최소 각속도 (환경에 맞춰 0.3~0.5 사이 조율 필요)
+                
+                # 아직 목표에 도달하지 못했는데(오차가 0.05 이상) 제어기 출력이 너무 작다면
+                if abs(e_r) >= 0.05 and abs(w) < MIN_W:
+                    # w의 부호(방향)는 유지하되, 크기를 최소 속도로 끌어올림
+                    w = MIN_W if w > 0 else -MIN_W
+                # --------------------------------------------------------
+                
+                # --------------------------------------------------------
                 if v < 0.0:
                     v = 0.0
                 desired_v, desired_w = v, w
                 manager.move(v, 0.0, w)
+            
 
         time.sleep(0.1)
 
@@ -114,7 +138,7 @@ def planning_thread():
 
     while True:
         start_time = time.time()
-        DESIRED_TIME = 0.3
+        DESIRED_TIME = 0.1 # 기존 0.3
         time.sleep(0.05)
 
         if not manager.new_image_arrived:
@@ -138,8 +162,8 @@ def planning_thread():
                 min_diff = diff
                 odom_infer = copy.deepcopy(odom[1])
                 # time_diff = odom[0] - rgb_time
-        # odom_time = manager.odom_timestamp
-        odom_rw_lock.release_read()
+        # odom_time = manager.odom_timestamp                
+        odom_rw_lock.release_read()        
 
         if odom_infer is not None and rgb_bytes is not None and depth_bytes is not None:
             global frame_data
@@ -176,6 +200,19 @@ def planning_thread():
                     w_P = (w_T_b @ (np.array([traj[0], traj[1], 0.0, 1.0])).T)[:2]
                     trajs_in_world.append(w_P)
                 trajs_in_world = np.array(trajs_in_world)
+                ####### Slowdown
+                if len(trajs_in_world) > 1:
+                    old_indices = np.arange(len(trajs_in_world))
+
+                    assert type(TRAJ_SLOWDOWN_FACTOR) == int, "TRAJ_SLOWDOWN_FACTOR should be an integer."
+                    num_new_points = (len(trajs_in_world) - 1) * TRAJ_SLOWDOWN_FACTOR + 1
+                    new_indices = np.linspace(0, len(trajs_in_world) - 1, num_new_points)
+
+                    x_interp = np.interp(new_indices, old_indices, trajs_in_world[:, 0])
+                    y_interp = np.interp(new_indices, old_indices, trajs_in_world[:, 1])
+
+                    trajs_in_world = np.column_stack((x_interp, y_interp))
+                ####### Slowdown
                 print(f"{time.time()} update traj")
 
                 manager.last_trajs_in_world = trajs_in_world
@@ -187,11 +224,19 @@ def planning_thread():
                     mpc.update_ref_traj(np.array(trajs_in_world))
                 manager.request_cnt += 1
                 mpc_rw_lock.release_write()
+                
                 current_control_mode = ControlMode.MPC_Mode
             elif 'discrete_action' in response:
                 actions = response['discrete_action']
                 if actions != [5] and actions != [9]:
-                    manager.incremental_change_goal(actions)
+                    x_, y_, yaw_ = odom_infer
+                    base_homo = np.array([
+                        [np.cos(yaw_), -np.sin(yaw_), 0, x_],
+                        [np.sin(yaw_),  np.cos(yaw_), 0, y_],
+                        [0, 0, 1, 0],
+                        [0, 0, 0, 1],
+                    ])
+                    manager.incremental_change_goal(actions, base_homo=base_homo)
                     current_control_mode = ControlMode.PID_Mode
         else:
             print(
@@ -244,6 +289,12 @@ class Go2Manager(Node):
         self.homo_odom = None
         self.homo_goal = None
         self.vel = None
+        
+
+        ######## Blur filter
+        self.prev_img_pack = None
+        self.LAPLACIAN_THRESHOLD = 100.0 # LOVON default value
+        ######## Blur filter
 
     def rgb_forward_callback(self, rgb_msg):
         raw_image = self.cv_bridge.imgmsg_to_cv2(rgb_msg, 'rgb8')[:, :, :]
@@ -258,13 +309,30 @@ class Go2Manager(Node):
 
     def rgb_depth_down_callback(self, rgb_msg, depth_msg):
         raw_image = self.cv_bridge.imgmsg_to_cv2(rgb_msg, 'rgb8')[:, :, :]
+        raw_depth = self.cv_bridge.imgmsg_to_cv2(depth_msg, '16UC1')
+
+        ######## Blur filter
+        if ENABLE_BLUR_FILTER:
+            if self.prev_img_pack is None:
+                self.prev_img_pack = (raw_image.copy(), raw_depth.copy())
+            else:
+                gray = cv2.cvtColor(raw_image, cv2.COLOR_RGB2GRAY)
+                laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
+                
+                LAPLACIAN_THRESHOLD = 100.0 # 필요시 환경에 맞게 수치 조절
+                
+                if laplacian_var < LAPLACIAN_THRESHOLD:
+                    raw_image, raw_depth = self.prev_img_pack
+                else:
+                    self.prev_img_pack = (raw_image.copy(), raw_depth.copy())
+        ######## Blur filter
+
         self.rgb_image = raw_image
         image = PIL_Image.fromarray(self.rgb_image)
         image_bytes = io.BytesIO()
         image.save(image_bytes, format='JPEG')
         image_bytes.seek(0)
 
-        raw_depth = self.cv_bridge.imgmsg_to_cv2(depth_msg, '16UC1')
         raw_depth[np.isnan(raw_depth)] = 0
         raw_depth[np.isinf(raw_depth)] = 0
         self.depth_image = raw_depth / 1000.0
@@ -313,10 +381,12 @@ class Go2Manager(Node):
         if self.odom_cnt == 1:
             self.homo_goal = self.homo_odom.copy()
 
-    def incremental_change_goal(self, actions):
+    def incremental_change_goal(self, actions, base_homo=None):
         if self.homo_goal is None:
             raise ValueError("Please initialize homo_goal before change it!")
-        homo_goal = self.homo_odom.copy()
+        # base_homo가 주어지면 그 시점(사진 찍힌 순간 odom_infer)을 기준으로 목표를 계산한다.
+        # None이면 현재 위치 기준(구버전 동작, 과회전 발생 가능).
+        homo_goal = base_homo.copy() if base_homo is not None else self.homo_odom.copy()
         for each_action in actions:
             if each_action == 0:
                 pass
@@ -325,13 +395,13 @@ class Go2Manager(Node):
                 homo_goal[0, 3] += 0.25 * np.cos(yaw)
                 homo_goal[1, 3] += 0.25 * np.sin(yaw)
             elif each_action == 2:
-                angle = math.radians(15)
+                angle = math.radians(ROTATE_STEP_DEG)
                 rotation_matrix = np.array(
                     [[math.cos(angle), -math.sin(angle), 0], [math.sin(angle), math.cos(angle), 0], [0, 0, 1]]
                 )
                 homo_goal[:3, :3] = np.dot(rotation_matrix, homo_goal[:3, :3])
             elif each_action == 3:
-                angle = -math.radians(15.0)
+                angle = -math.radians(ROTATE_STEP_DEG)
                 rotation_matrix = np.array(
                     [[math.cos(angle), -math.sin(angle), 0], [math.sin(angle), math.cos(angle), 0], [0, 0, 1]]
                 )
@@ -361,9 +431,7 @@ if __name__ == '__main__':
             [
                 "zenoh-bridge-ros2dds",
                 "-c",
-                "/home/unitree/zenoh_bridge/bridge_robot.json5",
-                "--rest-http-port",
-                "8000",
+                "/home/unitree/zenoh_bridge/udp_bridge.json5",
             ],
             cwd="/home/unitree/zenoh_bridge",
             stdout=subprocess.DEVNULL,
@@ -375,17 +443,18 @@ if __name__ == '__main__':
         control_thread_instance.start()
         planning_thread_instance.start()
 
-        log = Logger("/home/unitree/jiwon/InternNav/logs")
-        log.set_ros2_topic("/camera/color/image_raw", "sensor_msgs/msg/Image", hz=1.0, raw=True)
-        log.set_ros2_topic("/camera/aligned_depth_to_color/image_raw", "sensor_msgs/msg/Image", hz=1.0, raw=True)
-        log.set_ros2_topic("/utlidar/robot_odom", "nav_msgs/msg/Odometry", hz=10.0)
+        #log = Logger("/home/unitree/jiwon/InternNav/logs", hz=15.0)
+        #log.set_ros2_topic("/camera/color/image_raw", "sensor_msgs/msg/Image", hz=1.0, raw=True)
+        #log.set_ros2_topic("/camera/aligned_depth_to_color/image_raw", "sensor_msgs/msg/Image", hz=1.0, raw=True)
+        #log.set_ros2_topic("/utlidar/robot_odom", "nav_msgs/msg/Odometry", hz=10.0)
+        #log.add_dummy_publisher("/utlidar/robot_odom", "nav_msgs/msg/Odometry")
 
-        log.set_ros2_topic("/lowstate", "unitree_go/msg/LowState", hz=10.0)
-        log.logging_start()
+        # log.set_ros2_topic("/lowstate", "unitree_go/msg/LowState", hz=10.0)
+        #log.logging_start()
 
         executor = MultiThreadedExecutor(num_threads=4)
         executor.add_node(manager)
-        executor.add_node(log)
+        #executor.add_node(log)
         executor.spin()
     except KeyboardInterrupt:
         pass
