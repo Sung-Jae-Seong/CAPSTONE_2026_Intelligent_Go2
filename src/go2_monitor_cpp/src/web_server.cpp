@@ -674,8 +674,7 @@ std::string WebServer::index_html() const {
       background: transparent;
     }
 
-    .viewer-controls[hidden],
-    .live-input-bar[hidden] {
+    .viewer-controls[hidden] {
       display: none !important;
     }
 
@@ -751,15 +750,15 @@ std::string WebServer::index_html() const {
       accent-color: var(--accent);
     }
 
-    .live-input-bar {
+    .chat-composer {
       display: flex;
       align-items: center;
       gap: 10px;
-      margin-bottom: 14px;
+      margin-top: 12px;
       min-width: 0;
     }
 
-    .live-input-field {
+    .chat-input-field {
       width: 100%;
       min-width: 0;
       min-height: 44px;
@@ -776,11 +775,11 @@ std::string WebServer::index_html() const {
       box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
     }
 
-    .live-input-field::placeholder {
+    .chat-input-field::placeholder {
       color: var(--muted);
     }
 
-    .live-input-field:focus {
+    .chat-input-field:focus {
       outline: none;
       border-color: rgba(199, 92, 49, 0.55);
       box-shadow:
@@ -788,7 +787,7 @@ std::string WebServer::index_html() const {
         0 0 0 3px rgba(199, 92, 49, 0.14);
     }
 
-    .live-submit-button {
+    .chat-submit-button {
       min-width: 44px;
       width: 44px;
       height: 44px;
@@ -917,8 +916,64 @@ std::string WebServer::index_html() const {
       border: 1px solid var(--line);
       background: #f8f5f1;
       color: var(--ink);
-      font-family: "SFMono-Regular", Consolas, monospace;
-      font-size: 12px;
+    }
+
+    .chat-thread {
+      display: grid;
+      gap: 10px;
+      align-content: start;
+    }
+
+    .chat-row {
+      display: flex;
+      width: 100%;
+    }
+
+    .chat-row.user {
+      justify-content: flex-end;
+    }
+
+    .chat-row.assistant,
+    .chat-row.system {
+      justify-content: flex-start;
+    }
+
+    .chat-bubble {
+      max-width: min(78%, 560px);
+      padding: 10px 12px;
+      border-radius: 16px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.92);
+      box-shadow: 0 8px 18px rgba(31, 41, 51, 0.06);
+      min-width: 0;
+    }
+
+    .chat-row.user .chat-bubble {
+      background: linear-gradient(180deg, #1f2933, #334155);
+      border-color: rgba(31, 41, 51, 0.12);
+      color: #fff8ef;
+    }
+
+    .chat-row.system .chat-bubble {
+      background: rgba(217, 206, 192, 0.42);
+    }
+
+    .chat-role {
+      margin: 0 0 4px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .chat-row.user .chat-role {
+      color: rgba(255, 248, 239, 0.78);
+    }
+
+    .chat-message {
+      margin: 0;
+      font-size: 13px;
       line-height: 1.5;
       white-space: pre-wrap;
       overflow-wrap: anywhere;
@@ -988,7 +1043,7 @@ std::string WebServer::index_html() const {
         align-items: stretch;
       }
 
-      .live-input-bar {
+      .chat-composer {
         flex-direction: column;
         align-items: stretch;
       }
@@ -997,7 +1052,7 @@ std::string WebServer::index_html() const {
         flex-wrap: wrap;
       }
 
-      .live-submit-button {
+      .chat-submit-button {
         width: 100%;
       }
 
@@ -1040,22 +1095,6 @@ std::string WebServer::index_html() const {
           </div>
         </section>
 
-        <section class="live-input-bar" id="live-input-bar" hidden>
-          <textarea
-            class="live-input-field"
-            id="live-input-field"
-            rows="1"
-            placeholder="Type here..."
-            aria-label="Live input"
-          ></textarea>
-          <button
-            class="control-button live-submit-button"
-            id="live-submit-button"
-            type="button"
-            aria-label="Submit"
-          >↵</button>
-        </section>
-
         <div class="viewer-grid" id="viewer-grid">
           <section class="viewer-card">
             <p class="viewer-title">RGB</p>
@@ -1092,7 +1131,31 @@ std::string WebServer::index_html() const {
               <p class="viewer-title">Print / Stdout</p>
               <div class="stdout-readout" id="stdout-readout">stdout unavailable</div>
             </div>
-            <pre class="stdout-display" id="stdout-viewer">No stdout data</pre>
+            <div class="stdout-display" id="stdout-viewer">
+              <div class="chat-thread" id="stdout-thread">
+                <div class="chat-row system">
+                  <div class="chat-bubble">
+                    <p class="chat-role">Stdout</p>
+                    <p class="chat-message">No stdout data</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <section class="chat-composer" id="live-input-bar" hidden>
+              <textarea
+                class="chat-input-field"
+                id="live-input-field"
+                rows="1"
+                placeholder="Type here..."
+                aria-label="Live input"
+              ></textarea>
+              <button
+                class="control-button chat-submit-button"
+                id="live-submit-button"
+                type="button"
+                aria-label="Submit"
+              >↵</button>
+            </section>
           </section>
 
           <section class="viewer-card trajectory-panel" id="trajectory-card">
@@ -1131,6 +1194,7 @@ std::string WebServer::index_html() const {
     const liveInputFieldEl = document.getElementById('live-input-field');
     const liveSubmitButtonEl = document.getElementById('live-submit-button');
     const stdoutViewerEl = document.getElementById('stdout-viewer');
+    const stdoutThreadEl = document.getElementById('stdout-thread');
     const stdoutReadoutEl = document.getElementById('stdout-readout');
     const trajectoryCanvasEl = document.getElementById('trajectory-canvas');
     const poseReadoutEl = document.getElementById('pose-readout');
@@ -1140,7 +1204,6 @@ std::string WebServer::index_html() const {
       timeline: [],
       trajectory: [],
       stdoutEntries: [],
-      stdoutTextCache: [],
       currentPixelGoal: null,
       currentPlannedTrajectory: null,
       currentIndex: 0,
@@ -1187,7 +1250,6 @@ std::string WebServer::index_html() const {
       const atEnd = viewerState.currentIndex >= viewerState.timeline.length - 1;
       const isPlaying = viewerState.timerId !== null;
       const showPlaybackControls = viewerState.supportsPlayback;
-      const showLiveInput = !viewerState.supportsPlayback && viewerState.sourceMode === 'zenoh';
       const showZenohStdoutLayout = !viewerState.supportsPlayback && viewerState.sourceMode === 'zenoh';
 
       depthCardEl.hidden = showZenohStdoutLayout;
@@ -1204,14 +1266,14 @@ std::string WebServer::index_html() const {
       }
 
       viewerControlsEl.hidden = !showPlaybackControls;
-      liveInputBarEl.hidden = !showLiveInput;
       frameSliderEl.disabled = !playbackEnabled;
       playButtonEl.disabled = !playbackEnabled;
       playButtonEl.textContent = isPlaying ? 'Stop' : 'Play';
       prevButtonEl.disabled = !playbackEnabled || atStart;
       nextButtonEl.disabled = !playbackEnabled || atEnd;
-      liveInputFieldEl.disabled = !showLiveInput || viewerState.liveCommandInFlight;
-      liveSubmitButtonEl.disabled = !showLiveInput || viewerState.liveCommandInFlight;
+      liveInputBarEl.hidden = viewerState.sourceMode !== 'zenoh';
+      liveInputFieldEl.disabled = viewerState.sourceMode !== 'zenoh' || viewerState.liveCommandInFlight;
+      liveSubmitButtonEl.disabled = viewerState.sourceMode !== 'zenoh' || viewerState.liveCommandInFlight;
     }
 
     function drawTrajectory() {
@@ -1393,37 +1455,96 @@ std::string WebServer::index_html() const {
         `x ${timelineEntry.odom_x.toFixed(3)} · y ${timelineEntry.odom_y.toFixed(3)}${headingText} · ${timelineEntry.odom_timestamp || 'no stamp'}`;
     }
 
-    function buildStdoutTextCache(entries) {
-      const cache = [];
-      let text = '';
-
-      for (const entry of entries) {
-        const message = entry && typeof entry.message === 'string' ? entry.message : '';
-        text += message.endsWith('\n') ? message : `${message}\n`;
-        cache.push(text);
-      }
-
-      return cache;
-    }
-
-    function buildStdoutText(entries) {
-      let text = '';
-
-      for (const entry of entries) {
-        const message = entry && typeof entry.message === 'string' ? entry.message : '';
-        text += message.endsWith('\n') ? message : `${message}\n`;
-      }
-
-      return text;
-    }
-
     function appendLocalStdout(role, message) {
       const speaker = typeof role === 'string' && role.length > 0 ? role : 'GO2';
       const text = typeof message === 'string' ? message : String(message ?? '');
       viewerState.localStdoutEntries.push({
         timestamp: new Date().toISOString(),
-        message: `${speaker} : ${text}`,
+        role: speaker,
+        message: text,
       });
+    }
+
+    function normalizeStdoutEntry(entry) {
+      const rawMessage = entry && typeof entry.message === 'string' ? entry.message : '';
+      const explicitRole = entry && typeof entry.role === 'string' ? entry.role.trim() : '';
+      let role = explicitRole;
+      let message = rawMessage;
+
+      if (!role) {
+        const prefixMatch = rawMessage.match(/^\s*([^:\n]+)\s*:\s*([\s\S]*)$/);
+        if (prefixMatch) {
+          role = prefixMatch[1].trim();
+          message = prefixMatch[2];
+        }
+      }
+
+      const normalizedRole = role || 'Stdout';
+      const lowerRole = normalizedRole.toLowerCase();
+      let side = 'system';
+      if (lowerRole === 'user') {
+        side = 'user';
+      } else if (
+        lowerRole === 'go2' ||
+        lowerRole === 'assistant' ||
+        lowerRole === 'llm' ||
+        lowerRole === 'planner'
+      ) {
+        side = 'assistant';
+      }
+
+      return {
+        timestamp: entry && entry.timestamp ? entry.timestamp : '',
+        role: normalizedRole,
+        message: typeof message === 'string' && message.length > 0 ? message : '(empty response)',
+        side,
+      };
+    }
+
+    function renderChatEntries(entries, emptyMessage) {
+      stdoutThreadEl.innerHTML = '';
+
+      if (!entries.length) {
+        const row = document.createElement('div');
+        row.className = 'chat-row system';
+
+        const bubble = document.createElement('div');
+        bubble.className = 'chat-bubble';
+
+        const role = document.createElement('p');
+        role.className = 'chat-role';
+        role.textContent = 'Stdout';
+
+        const message = document.createElement('p');
+        message.className = 'chat-message';
+        message.textContent = emptyMessage;
+
+        bubble.append(role, message);
+        row.append(bubble);
+        stdoutThreadEl.append(row);
+        return;
+      }
+
+      for (const entry of entries) {
+        const normalized = normalizeStdoutEntry(entry);
+        const row = document.createElement('div');
+        row.className = `chat-row ${normalized.side}`;
+
+        const bubble = document.createElement('div');
+        bubble.className = 'chat-bubble';
+
+        const role = document.createElement('p');
+        role.className = 'chat-role';
+        role.textContent = normalized.role;
+
+        const message = document.createElement('p');
+        message.className = 'chat-message';
+        message.textContent = normalized.message;
+
+        bubble.append(role, message);
+        row.append(bubble);
+        stdoutThreadEl.append(row);
+      }
     }
 
     function extractPixelGoal(message) {
@@ -1578,48 +1699,47 @@ std::string WebServer::index_html() const {
     }
 
     function renderStdout() {
-      const localStdoutText = buildStdoutText(viewerState.localStdoutEntries);
       const lastLocalEntry = viewerState.localStdoutEntries.length > 0
         ? viewerState.localStdoutEntries[viewerState.localStdoutEntries.length - 1]
         : null;
 
       if (!viewerState.timeline.length) {
-        if (!localStdoutText) {
+        if (!viewerState.localStdoutEntries.length) {
           stdoutReadoutEl.textContent = 'stdout unavailable';
-          stdoutViewerEl.textContent = 'No stdout data';
+          renderChatEntries([], 'No stdout data');
           return;
         }
 
         stdoutReadoutEl.textContent = lastLocalEntry && lastLocalEntry.timestamp
           ? lastLocalEntry.timestamp
           : 'instruction response';
-        stdoutViewerEl.textContent = localStdoutText;
+        renderChatEntries(viewerState.localStdoutEntries, 'No stdout data');
         stdoutViewerEl.scrollTop = stdoutViewerEl.scrollHeight;
         return;
       }
 
       const timelineEntry = viewerState.timeline[viewerState.currentIndex];
-      let baseStdoutText = '';
+      let baseStdoutEntries = [];
       let baseReadoutText = 'stdout unavailable';
 
-      if (timelineEntry && timelineEntry.has_stdout && viewerState.stdoutTextCache.length) {
-        const stdoutIndex = Math.min(timelineEntry.stdout_index, viewerState.stdoutTextCache.length - 1);
+      if (timelineEntry && timelineEntry.has_stdout && viewerState.stdoutEntries.length) {
+        const stdoutIndex = Math.min(timelineEntry.stdout_index, viewerState.stdoutEntries.length - 1);
         const stdoutEntry = viewerState.stdoutEntries[stdoutIndex];
         baseReadoutText = stdoutEntry && stdoutEntry.timestamp ? stdoutEntry.timestamp : 'stdout';
-        baseStdoutText = viewerState.stdoutTextCache[stdoutIndex];
+        baseStdoutEntries = viewerState.stdoutEntries.slice(0, stdoutIndex + 1);
       }
 
-      const mergedStdoutText = `${baseStdoutText}${localStdoutText}`;
-      if (!mergedStdoutText) {
+      const mergedStdoutEntries = baseStdoutEntries.concat(viewerState.localStdoutEntries);
+      if (!mergedStdoutEntries.length) {
         stdoutReadoutEl.textContent = 'stdout unavailable';
-        stdoutViewerEl.textContent = 'No stdout data for this time';
+        renderChatEntries([], 'No stdout data for this time');
         return;
       }
 
       stdoutReadoutEl.textContent = lastLocalEntry && lastLocalEntry.timestamp
         ? lastLocalEntry.timestamp
         : baseReadoutText;
-      stdoutViewerEl.textContent = mergedStdoutText;
+      renderChatEntries(mergedStdoutEntries, 'No stdout data for this time');
       stdoutViewerEl.scrollTop = stdoutViewerEl.scrollHeight;
     }
 
@@ -1790,7 +1910,6 @@ std::string WebServer::index_html() const {
         viewerState.timeline = payload.timeline || [];
         viewerState.trajectory = payload.trajectory || [];
         viewerState.stdoutEntries = payload.stdout_entries || [];
-        viewerState.stdoutTextCache = buildStdoutTextCache(viewerState.stdoutEntries);
         viewerState.currentIndex = 0;
         renderFrame();
       } catch (error) {

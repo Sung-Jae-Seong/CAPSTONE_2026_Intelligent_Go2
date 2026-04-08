@@ -150,8 +150,7 @@
       background: transparent;
     }
 
-    .viewer-controls[hidden],
-    .live-input-bar[hidden] {
+    .viewer-controls[hidden] {
       display: none !important;
     }
 
@@ -227,15 +226,15 @@
       accent-color: var(--accent);
     }
 
-    .live-input-bar {
+    .chat-composer {
       display: flex;
       align-items: center;
       gap: 10px;
-      margin-bottom: 14px;
+      margin-top: 12px;
       min-width: 0;
     }
 
-    .live-input-field {
+    .chat-input-field {
       width: 100%;
       min-width: 0;
       min-height: 44px;
@@ -252,11 +251,11 @@
       box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
     }
 
-    .live-input-field::placeholder {
+    .chat-input-field::placeholder {
       color: var(--muted);
     }
 
-    .live-input-field:focus {
+    .chat-input-field:focus {
       outline: none;
       border-color: rgba(199, 92, 49, 0.55);
       box-shadow:
@@ -264,7 +263,7 @@
         0 0 0 3px rgba(199, 92, 49, 0.14);
     }
 
-    .live-submit-button {
+    .chat-submit-button {
       min-width: 44px;
       width: 44px;
       height: 44px;
@@ -393,8 +392,64 @@
       border: 1px solid var(--line);
       background: #f8f5f1;
       color: var(--ink);
-      font-family: "SFMono-Regular", Consolas, monospace;
-      font-size: 12px;
+    }
+
+    .chat-thread {
+      display: grid;
+      gap: 10px;
+      align-content: start;
+    }
+
+    .chat-row {
+      display: flex;
+      width: 100%;
+    }
+
+    .chat-row.user {
+      justify-content: flex-end;
+    }
+
+    .chat-row.assistant,
+    .chat-row.system {
+      justify-content: flex-start;
+    }
+
+    .chat-bubble {
+      max-width: min(78%, 560px);
+      padding: 10px 12px;
+      border-radius: 16px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.92);
+      box-shadow: 0 8px 18px rgba(31, 41, 51, 0.06);
+      min-width: 0;
+    }
+
+    .chat-row.user .chat-bubble {
+      background: linear-gradient(180deg, #1f2933, #334155);
+      border-color: rgba(31, 41, 51, 0.12);
+      color: #fff8ef;
+    }
+
+    .chat-row.system .chat-bubble {
+      background: rgba(217, 206, 192, 0.42);
+    }
+
+    .chat-role {
+      margin: 0 0 4px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .chat-row.user .chat-role {
+      color: rgba(255, 248, 239, 0.78);
+    }
+
+    .chat-message {
+      margin: 0;
+      font-size: 13px;
       line-height: 1.5;
       white-space: pre-wrap;
       overflow-wrap: anywhere;
@@ -471,7 +526,7 @@
         align-items: stretch;
       }
 
-      .live-input-bar {
+      .chat-composer {
         flex-direction: column;
         align-items: stretch;
       }
@@ -480,7 +535,7 @@
         flex-wrap: wrap;
       }
 
-      .live-submit-button {
+      .chat-submit-button {
         width: 100%;
       }
 
@@ -523,22 +578,6 @@
           </div>
         </section>
 
-        <section class="live-input-bar" id="live-input-bar" hidden>
-          <textarea
-            class="live-input-field"
-            id="live-input-field"
-            rows="1"
-            placeholder="Type here..."
-            aria-label="Live input"
-          ></textarea>
-          <button
-            class="control-button live-submit-button"
-            id="live-submit-button"
-            type="button"
-            aria-label="Submit"
-          >↵</button>
-        </section>
-
         <div class="viewer-grid" id="viewer-grid">
           <section class="viewer-card">
             <p class="viewer-title">RGB</p>
@@ -575,7 +614,31 @@
               <p class="viewer-title">Print / Stdout</p>
               <div class="stdout-readout" id="stdout-readout">stdout unavailable</div>
             </div>
-            <pre class="stdout-display" id="stdout-viewer">No stdout data</pre>
+            <div class="stdout-display" id="stdout-viewer">
+              <div class="chat-thread" id="stdout-thread">
+                <div class="chat-row system">
+                  <div class="chat-bubble">
+                    <p class="chat-role">Stdout</p>
+                    <p class="chat-message">No stdout data</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <section class="chat-composer" id="live-input-bar" hidden>
+              <textarea
+                class="chat-input-field"
+                id="live-input-field"
+                rows="1"
+                placeholder="Type here..."
+                aria-label="Live input"
+              ></textarea>
+              <button
+                class="control-button chat-submit-button"
+                id="live-submit-button"
+                type="button"
+                aria-label="Submit"
+              >↵</button>
+            </section>
           </section>
 
           <section class="viewer-card trajectory-panel" id="trajectory-card">
@@ -619,6 +682,7 @@
     const liveInputFieldEl = document.getElementById('live-input-field');
     const liveSubmitButtonEl = document.getElementById('live-submit-button');
     const stdoutViewerEl = document.getElementById('stdout-viewer');
+    const stdoutThreadEl = document.getElementById('stdout-thread');
     const stdoutReadoutEl = document.getElementById('stdout-readout');
     const trajectoryCanvasEl = document.getElementById('trajectory-canvas');
     const poseReadoutEl = document.getElementById('pose-readout');
@@ -632,11 +696,11 @@
       trajectory: [],
       currentPixelGoal: { x: 428, y: 190 },
       localStdoutEntries: [
-        { timestamp: '2026-04-08T12:48:31.010Z', message: 'User : kitchen doorway toward the charging dock' },
-        { timestamp: '2026-04-08T12:48:31.198Z', message: 'GO2 : route updated, approaching hallway' },
-        { timestamp: '2026-04-08T12:48:31.542Z', message: 'planner : {"pixel_goal":[428,190],"trajectory":[{"x":0.0,"y":0.0},{"x":0.5,"y":0.1},{"x":1.1,"y":0.35},{"x":1.8,"y":0.65}]}' },
-        { timestamp: '2026-04-08T12:48:31.740Z', message: 'camera : rgb + depth synchronized' },
-        { timestamp: '2026-04-08T12:48:31.992Z', message: 'nav : odom frame stable' }
+        { timestamp: '2026-04-08T12:48:31.010Z', role: 'User', message: 'kitchen doorway toward the charging dock' },
+        { timestamp: '2026-04-08T12:48:31.198Z', role: 'GO2', message: 'route updated, approaching hallway' },
+        { timestamp: '2026-04-08T12:48:31.542Z', role: 'planner', message: '{"pixel_goal":[428,190],"trajectory":[{"x":0.0,"y":0.0},{"x":0.5,"y":0.1},{"x":1.1,"y":0.35},{"x":1.8,"y":0.65}]}' },
+        { timestamp: '2026-04-08T12:48:31.740Z', role: 'camera', message: 'rgb + depth synchronized' },
+        { timestamp: '2026-04-08T12:48:31.992Z', role: 'nav', message: 'odom frame stable' }
       ]
     };
 
@@ -735,7 +799,6 @@
       const atStart = previewState.currentIndex <= 0;
       const atEnd = previewState.currentIndex >= previewState.timeline.length - 1;
       const showPlaybackControls = previewState.supportsPlayback;
-      const showLiveInput = !previewState.supportsPlayback && previewState.sourceMode === 'zenoh';
       const showZenohStdoutLayout = !previewState.supportsPlayback && previewState.sourceMode === 'zenoh';
 
       depthCardEl.hidden = showZenohStdoutLayout;
@@ -752,23 +815,101 @@
       }
 
       viewerControlsEl.hidden = !showPlaybackControls;
-      liveInputBarEl.hidden = !showLiveInput;
+      liveInputBarEl.hidden = previewState.sourceMode !== 'zenoh';
       frameSliderEl.disabled = !playbackEnabled;
       playButtonEl.disabled = !playbackEnabled;
       prevButtonEl.disabled = !playbackEnabled || atStart;
       nextButtonEl.disabled = !playbackEnabled || atEnd;
-      liveInputFieldEl.disabled = !showLiveInput || previewState.liveCommandInFlight;
-      liveSubmitButtonEl.disabled = !showLiveInput || previewState.liveCommandInFlight;
+      liveInputFieldEl.disabled = previewState.sourceMode !== 'zenoh' || previewState.liveCommandInFlight;
+      liveSubmitButtonEl.disabled = previewState.sourceMode !== 'zenoh' || previewState.liveCommandInFlight;
+    }
+
+    function normalizeStdoutEntry(entry) {
+      const rawMessage = entry && typeof entry.message === 'string' ? entry.message : '';
+      const explicitRole = entry && typeof entry.role === 'string' ? entry.role.trim() : '';
+      let role = explicitRole;
+      let message = rawMessage;
+
+      if (!role) {
+        const prefixMatch = rawMessage.match(/^\s*([^:\n]+)\s*:\s*([\s\S]*)$/);
+        if (prefixMatch) {
+          role = prefixMatch[1].trim();
+          message = prefixMatch[2];
+        }
+      }
+
+      const normalizedRole = role || 'Stdout';
+      const lowerRole = normalizedRole.toLowerCase();
+      let side = 'system';
+      if (lowerRole === 'user') {
+        side = 'user';
+      } else if (
+        lowerRole === 'go2' ||
+        lowerRole === 'assistant' ||
+        lowerRole === 'llm' ||
+        lowerRole === 'planner'
+      ) {
+        side = 'assistant';
+      }
+
+      return {
+        timestamp: entry && entry.timestamp ? entry.timestamp : '',
+        role: normalizedRole,
+        message: typeof message === 'string' && message.length > 0 ? message : '(empty response)',
+        side
+      };
+    }
+
+    function renderChatEntries(entries, emptyMessage) {
+      stdoutThreadEl.innerHTML = '';
+
+      if (!entries.length) {
+        const row = document.createElement('div');
+        row.className = 'chat-row system';
+
+        const bubble = document.createElement('div');
+        bubble.className = 'chat-bubble';
+
+        const role = document.createElement('p');
+        role.className = 'chat-role';
+        role.textContent = 'Stdout';
+
+        const message = document.createElement('p');
+        message.className = 'chat-message';
+        message.textContent = emptyMessage;
+
+        bubble.append(role, message);
+        row.append(bubble);
+        stdoutThreadEl.append(row);
+        return;
+      }
+
+      for (const entry of entries) {
+        const normalized = normalizeStdoutEntry(entry);
+        const row = document.createElement('div');
+        row.className = `chat-row ${normalized.side}`;
+
+        const bubble = document.createElement('div');
+        bubble.className = 'chat-bubble';
+
+        const role = document.createElement('p');
+        role.className = 'chat-role';
+        role.textContent = normalized.role;
+
+        const message = document.createElement('p');
+        message.className = 'chat-message';
+        message.textContent = normalized.message;
+
+        bubble.append(role, message);
+        row.append(bubble);
+        stdoutThreadEl.append(row);
+      }
     }
 
     function renderStdout() {
-      const text = previewState.localStdoutEntries.map((entry) => {
-        return entry.message.endsWith('\n') ? entry.message : `${entry.message}\n`;
-      }).join('');
       const lastEntry = previewState.localStdoutEntries[previewState.localStdoutEntries.length - 1];
-
       stdoutReadoutEl.textContent = lastEntry ? lastEntry.timestamp : 'stdout unavailable';
-      stdoutViewerEl.textContent = text || 'No stdout data';
+      renderChatEntries(previewState.localStdoutEntries, 'No stdout data');
       stdoutViewerEl.scrollTop = stdoutViewerEl.scrollHeight;
     }
 
@@ -944,8 +1085,47 @@
       updateControls();
     }
 
+    function submitPreviewInstruction() {
+      if (previewState.sourceMode !== 'zenoh' || previewState.liveCommandInFlight) {
+        return;
+      }
+
+      const instruction = liveInputFieldEl.value.trim();
+      if (!instruction) {
+        return;
+      }
+
+      previewState.localStdoutEntries.push({
+        timestamp: new Date().toISOString(),
+        role: 'User',
+        message: instruction
+      });
+      liveInputFieldEl.value = '';
+      previewState.liveCommandInFlight = true;
+      updateControls();
+      renderStdout();
+
+      window.setTimeout(() => {
+        previewState.localStdoutEntries.push({
+          timestamp: new Date().toISOString(),
+          role: 'GO2',
+          message: `preview response for: ${instruction}`
+        });
+        previewState.liveCommandInFlight = false;
+        renderStdout();
+        updateControls();
+      }, 320);
+    }
+
     renderTopics();
     renderFrame();
+    liveSubmitButtonEl.addEventListener('click', submitPreviewInstruction);
+    liveInputFieldEl.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+        event.preventDefault();
+        submitPreviewInstruction();
+      }
+    });
     window.addEventListener('resize', () => {
       renderPixelGoalOverlay();
       drawTrajectory();
