@@ -1,20 +1,21 @@
 <!doctype html>
-<html lang="ko">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>go2 monitor UI preview</title>
+  <title>go2 monitor</title>
   <style>
     :root {
       color-scheme: light;
       --bg-top: #fff8ef;
       --bg-bottom: #efe5d8;
-      --panel: rgba(255, 255, 255, 0.8);
+      --panel: rgba(255, 255, 255, 0.80);
       --line: #ddd2c3;
       --ink: #1f2933;
       --muted: #667085;
       --accent: #c75c31;
-      --shadow: 0 18px 36px rgba(31, 41, 51, 0.1);
+      --accent-soft: #fbe2d5;
+      --shadow: 0 18px 36px rgba(31, 41, 51, 0.10);
     }
 
     * { box-sizing: border-box; }
@@ -56,20 +57,6 @@
       color: var(--muted);
       font-size: 15px;
       line-height: 1.6;
-    }
-
-    .preview-badge {
-      align-self: center;
-      border-radius: 999px;
-      padding: 8px 12px;
-      background: rgba(255, 255, 255, 0.68);
-      border: 1px solid rgba(255, 255, 255, 0.9);
-      box-shadow: var(--shadow);
-      color: var(--muted);
-      font-size: 12px;
-      font-weight: 700;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
     }
 
     .grid {
@@ -144,6 +131,15 @@
       flex: 1 1 120px;
     }
 
+    .empty {
+      padding: 14px;
+      border-radius: 14px;
+      border: 1px dashed var(--line);
+      color: var(--muted);
+      background: rgba(255, 255, 255, 0.56);
+      font-size: 13px;
+    }
+
     .viewer-controls {
       display: flex;
       align-items: center;
@@ -152,6 +148,11 @@
       padding: 0;
       border: none;
       background: transparent;
+    }
+
+    .viewer-controls[hidden],
+    .live-input-bar[hidden] {
+      display: none !important;
     }
 
     .button-row {
@@ -182,6 +183,12 @@
     .control-button.secondary {
       background: #d9cec0;
       color: #3d4752;
+    }
+
+    .control-button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+      transform: none;
     }
 
     .timeline-row {
@@ -220,10 +227,64 @@
       accent-color: var(--accent);
     }
 
+    .live-input-bar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 14px;
+      min-width: 0;
+    }
+
+    .live-input-field {
+      width: 100%;
+      min-width: 0;
+      min-height: 44px;
+      max-height: 44px;
+      resize: none;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 11px 14px;
+      background: rgba(255, 255, 255, 0.82);
+      color: var(--ink);
+      font: inherit;
+      font-size: 13px;
+      line-height: 1.4;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
+    }
+
+    .live-input-field::placeholder {
+      color: var(--muted);
+    }
+
+    .live-input-field:focus {
+      outline: none;
+      border-color: rgba(199, 92, 49, 0.55);
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.55),
+        0 0 0 3px rgba(199, 92, 49, 0.14);
+    }
+
+    .live-submit-button {
+      min-width: 44px;
+      width: 44px;
+      height: 44px;
+      padding: 0;
+      font-size: 18px;
+      line-height: 1;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex: 0 0 auto;
+    }
+
     .viewer-grid {
       display: grid;
       grid-template-columns: 1fr 1fr;
       gap: 14px;
+    }
+
+    .viewer-grid.single-panel {
+      grid-template-columns: 1fr;
     }
 
     .support-grid {
@@ -274,9 +335,12 @@
 
     .pixel-goal-marker {
       position: absolute;
+      display: none;
       transform: translate(-50%, -50%);
-      left: 62%;
-      top: 38%;
+    }
+
+    .pixel-goal-marker.visible {
+      display: block;
     }
 
     .pixel-goal-dot {
@@ -285,7 +349,7 @@
       border-radius: 999px;
       background: #e11d48;
       border: 2px solid #fff8ef;
-      box-shadow: 0 0 0 2px rgba(225, 29, 72, 0.2);
+      box-shadow: 0 0 0 2px rgba(225, 29, 72, 0.20);
       display: block;
     }
 
@@ -303,8 +367,7 @@
       white-space: nowrap;
     }
 
-    .panel-head,
-    .trajectory-head {
+    .panel-head {
       display: flex;
       justify-content: space-between;
       gap: 10px;
@@ -312,8 +375,7 @@
       margin-bottom: 10px;
     }
 
-    .stdout-readout,
-    .pose-readout {
+    .stdout-readout {
       color: var(--muted);
       font-family: "SFMono-Regular", Consolas, monospace;
       font-size: 12px;
@@ -338,8 +400,27 @@
       overflow-wrap: anywhere;
     }
 
-    .trajectory-stage {
-      position: relative;
+    .trajectory-panel {
+      margin-top: 0;
+      padding: 0;
+      border: none;
+      background: transparent;
+    }
+
+    .trajectory-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+
+    .pose-readout {
+      color: var(--muted);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 12px;
+      text-align: right;
+      word-break: break-word;
     }
 
     .trajectory-note {
@@ -356,6 +437,10 @@
       pointer-events: none;
     }
 
+    .trajectory-stage {
+      position: relative;
+    }
+
     #trajectory-canvas {
       width: 100%;
       height: 256px;
@@ -365,8 +450,8 @@
       background: #f8f5f1;
     }
 
-    .preview-footer {
-      margin-top: 16px;
+    .preview-note {
+      margin-top: 14px;
       color: var(--muted);
       font-size: 13px;
       line-height: 1.6;
@@ -386,8 +471,17 @@
         align-items: stretch;
       }
 
+      .live-input-bar {
+        flex-direction: column;
+        align-items: stretch;
+      }
+
       .button-row {
         flex-wrap: wrap;
+      }
+
+      .live-submit-button {
+        width: 100%;
       }
 
       .viewer-grid {
@@ -399,65 +493,63 @@
 <body>
   <main>
     <section class="hero">
-      <div>
-        <h1>go2 monitor</h1>
-        <p class="subtitle">
-          서버 연결 없이 UI 비주얼만 확인하기 위한 정적 미리보기입니다.
-          실제 API, WebSocket, 로봇 데이터 대신 샘플 토픽과 이미지가 표시됩니다.
-        </p>
-      </div>
-      <div class="preview-badge">Static Preview</div>
+      <h1>go2 monitor</h1>
     </section>
 
     <section class="grid">
       <section class="card topics-card">
         <h2 class="section-title">Topics</h2>
-        <ul class="topic-list">
-          <li class="topic-item">
-            <p class="topic-name">/camera/color/image_raw</p>
-            <div class="topic-meta"><span class="topic-type">sensor_msgs/msg/Image</span></div>
-          </li>
-          <li class="topic-item">
-            <p class="topic-name">/camera/aligned_depth_to_color/image_raw</p>
-            <div class="topic-meta"><span class="topic-type">sensor_msgs/msg/Image</span></div>
-          </li>
-          <li class="topic-item">
-            <p class="topic-name">/odometry/filtered</p>
-            <div class="topic-meta"><span class="topic-type">nav_msgs/msg/Odometry</span></div>
-          </li>
-          <li class="topic-item">
-            <p class="topic-name">print</p>
-            <div class="topic-meta"><span class="topic-type">stdout stream</span></div>
-          </li>
+        <ul class="topic-list" id="topics">
+          <li class="empty">Loading topics...</li>
         </ul>
       </section>
 
       <section class="card">
         <h2 class="section-title">Viewers</h2>
 
-        <section class="viewer-controls">
+        <section class="viewer-controls" id="viewer-controls" hidden>
           <div class="button-row">
-            <button class="control-button secondary" type="button">Prev</button>
-            <button class="control-button" type="button">Play</button>
-            <button class="control-button secondary" type="button">Next</button>
+            <button class="control-button secondary" id="btn-prev" type="button">Prev</button>
+            <button class="control-button" id="btn-play" type="button">Play</button>
+            <button class="control-button secondary" id="btn-next" type="button">Next</button>
           </div>
 
           <div class="timeline-row">
             <div class="timeline-meta">
-              <strong>Frame 12 / 128</strong>
-              <span>2026-04-08T14:13:21.412Z</span>
+              <strong id="frame-label">No frames</strong>
+              <span id="frame-time">viewer unavailable</span>
             </div>
-            <input type="range" min="0" max="127" value="11" step="1">
+            <input id="frame-slider" type="range" min="0" max="0" value="0" step="1" disabled>
           </div>
         </section>
 
-        <div class="viewer-grid">
+        <section class="live-input-bar" id="live-input-bar" hidden>
+          <textarea
+            class="live-input-field"
+            id="live-input-field"
+            rows="1"
+            placeholder="Type here..."
+            aria-label="Live input"
+          ></textarea>
+          <button
+            class="control-button live-submit-button"
+            id="live-submit-button"
+            type="button"
+            aria-label="Submit"
+          >↵</button>
+        </section>
+
+        <div class="viewer-grid" id="viewer-grid">
           <section class="viewer-card">
             <p class="viewer-title">RGB</p>
             <div class="viewer-frame">
-              <img id="rgb-preview" alt="RGB preview">
+              <img
+                id="viewer-left"
+                alt="RGB viewer"
+                src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='800' height='600'><rect width='100%' height='100%' fill='%23f4ede5'/><text x='50%' y='50%' dominant-baseline='middle' text-anchor='middle' font-family='Segoe UI, sans-serif' font-size='28' fill='%23667085'>No image</text></svg>"
+              >
               <div class="viewer-overlay">
-                <div class="pixel-goal-marker">
+                <div class="pixel-goal-marker" id="pixel-goal-marker">
                   <span class="pixel-goal-dot"></span>
                   <span class="pixel-goal-label">pixel goal</span>
                 </div>
@@ -465,31 +557,31 @@
             </div>
           </section>
 
-          <section class="viewer-card">
+          <section class="viewer-card" id="depth-card">
             <p class="viewer-title">Depth</p>
             <div class="viewer-frame">
-              <img id="depth-preview" alt="Depth preview">
+              <img
+                id="viewer-right"
+                alt="Depth viewer"
+                src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='800' height='600'><rect width='100%' height='100%' fill='%23f4ede5'/><text x='50%' y='50%' dominant-baseline='middle' text-anchor='middle' font-family='Segoe UI, sans-serif' font-size='28' fill='%23667085'>No image</text></svg>"
+              >
             </div>
           </section>
         </div>
 
-        <div class="viewer-grid support-grid">
-          <section class="viewer-card">
+        <div class="viewer-grid support-grid" id="support-grid">
+          <section class="viewer-card" id="stdout-card">
             <div class="panel-head">
               <p class="viewer-title">Print / Stdout</p>
-              <div class="stdout-readout">2026-04-08T14:13:22.009Z</div>
+              <div class="stdout-readout" id="stdout-readout">stdout unavailable</div>
             </div>
-            <pre class="stdout-display">User : kitchen doorway toward the charging dock
-GO2 : route updated, approaching hallway
-planner : {"pixel_goal":[428,190],"trajectory":[{"x":0.0,"y":0.0},{"x":0.5,"y":0.1},{"x":1.1,"y":0.35},{"x":1.8,"y":0.65}]}
-camera : rgb + depth synchronized
-nav : odom frame stable</pre>
+            <pre class="stdout-display" id="stdout-viewer">No stdout data</pre>
           </section>
 
-          <section class="viewer-card">
+          <section class="viewer-card trajectory-panel" id="trajectory-card">
             <div class="trajectory-head">
               <p class="viewer-title">Trajectory</p>
-              <div class="pose-readout">x 1.824 · y 0.612 · yaw 28.5° · 2026-04-08T14:13:21.412Z</div>
+              <div class="pose-readout" id="pose-readout">odometry unavailable</div>
             </div>
             <div class="trajectory-stage">
               <canvas id="trajectory-canvas"></canvas>
@@ -500,13 +592,54 @@ nav : odom frame stable</pre>
       </section>
     </section>
 
-    <p class="preview-footer">
-      파일을 더블클릭하거나 브라우저에서 직접 열면 됩니다. 실제 서비스 UI를 바꿀 때는
-      <code>src/go2_monitor_cpp/src/web_server.cpp</code>를 수정하면 됩니다.
+    <p class="preview-note">
+      이 파일은 실제 UI 구조를 정적으로 재현한 미리보기입니다. 실제 서비스 변경은
+      <code>src/go2_monitor_cpp/src/web_server.cpp</code>에서 하면 됩니다.
     </p>
   </main>
 
   <script>
+    const topicsEl = document.getElementById('topics');
+    const viewerLeftEl = document.getElementById('viewer-left');
+    const viewerRightEl = document.getElementById('viewer-right');
+    const pixelGoalMarkerEl = document.getElementById('pixel-goal-marker');
+    const viewerGridEl = document.getElementById('viewer-grid');
+    const supportGridEl = document.getElementById('support-grid');
+    const depthCardEl = document.getElementById('depth-card');
+    const stdoutCardEl = document.getElementById('stdout-card');
+    const trajectoryCardEl = document.getElementById('trajectory-card');
+    const viewerControlsEl = document.getElementById('viewer-controls');
+    const frameSliderEl = document.getElementById('frame-slider');
+    const frameLabelEl = document.getElementById('frame-label');
+    const frameTimeEl = document.getElementById('frame-time');
+    const playButtonEl = document.getElementById('btn-play');
+    const prevButtonEl = document.getElementById('btn-prev');
+    const nextButtonEl = document.getElementById('btn-next');
+    const liveInputBarEl = document.getElementById('live-input-bar');
+    const liveInputFieldEl = document.getElementById('live-input-field');
+    const liveSubmitButtonEl = document.getElementById('live-submit-button');
+    const stdoutViewerEl = document.getElementById('stdout-viewer');
+    const stdoutReadoutEl = document.getElementById('stdout-readout');
+    const trajectoryCanvasEl = document.getElementById('trajectory-canvas');
+    const poseReadoutEl = document.getElementById('pose-readout');
+
+    const previewState = {
+      sourceMode: 'zenoh',
+      supportsPlayback: false,
+      liveCommandInFlight: false,
+      currentIndex: 0,
+      timeline: [],
+      trajectory: [],
+      currentPixelGoal: { x: 428, y: 190 },
+      localStdoutEntries: [
+        { timestamp: '2026-04-08T12:48:31.010Z', message: 'User : kitchen doorway toward the charging dock' },
+        { timestamp: '2026-04-08T12:48:31.198Z', message: 'GO2 : route updated, approaching hallway' },
+        { timestamp: '2026-04-08T12:48:31.542Z', message: 'planner : {"pixel_goal":[428,190],"trajectory":[{"x":0.0,"y":0.0},{"x":0.5,"y":0.1},{"x":1.1,"y":0.35},{"x":1.8,"y":0.65}]}' },
+        { timestamp: '2026-04-08T12:48:31.740Z', message: 'camera : rgb + depth synchronized' },
+        { timestamp: '2026-04-08T12:48:31.992Z', message: 'nav : odom frame stable' }
+      ]
+    };
+
     function makeSceneSvg() {
       return `
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600">
@@ -566,46 +699,138 @@ nav : odom frame stable</pre>
       return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
     }
 
+    function renderTopics() {
+      const topics = [
+        { name: '/camera/color/image_raw', type: 'sensor_msgs/msg/Image' },
+        { name: '/camera/aligned_depth_to_color/image_raw', type: 'sensor_msgs/msg/Image' },
+        { name: '/odometry/filtered', type: 'nav_msgs/msg/Odometry' },
+        { name: 'print', type: 'stdout stream' }
+      ];
+
+      topicsEl.innerHTML = '';
+      for (const topic of topics) {
+        const item = document.createElement('li');
+        item.className = 'topic-item';
+
+        const name = document.createElement('p');
+        name.className = 'topic-name';
+        name.textContent = topic.name;
+
+        const meta = document.createElement('div');
+        meta.className = 'topic-meta';
+
+        const type = document.createElement('span');
+        type.className = 'topic-type';
+        type.textContent = topic.type;
+
+        meta.append(type);
+        item.append(name, meta);
+        topicsEl.append(item);
+      }
+    }
+
+    function updateControls() {
+      const hasTimeline = previewState.timeline.length > 0;
+      const playbackEnabled = previewState.supportsPlayback && hasTimeline;
+      const atStart = previewState.currentIndex <= 0;
+      const atEnd = previewState.currentIndex >= previewState.timeline.length - 1;
+      const showPlaybackControls = previewState.supportsPlayback;
+      const showLiveInput = !previewState.supportsPlayback && previewState.sourceMode === 'zenoh';
+      const showZenohStdoutLayout = !previewState.supportsPlayback && previewState.sourceMode === 'zenoh';
+
+      depthCardEl.hidden = showZenohStdoutLayout;
+      if (showZenohStdoutLayout) {
+        supportGridEl.classList.add('single-panel');
+        if (stdoutCardEl.parentElement !== viewerGridEl) {
+          viewerGridEl.appendChild(stdoutCardEl);
+        }
+      } else {
+        supportGridEl.classList.remove('single-panel');
+        if (stdoutCardEl.parentElement !== supportGridEl) {
+          supportGridEl.insertBefore(stdoutCardEl, trajectoryCardEl);
+        }
+      }
+
+      viewerControlsEl.hidden = !showPlaybackControls;
+      liveInputBarEl.hidden = !showLiveInput;
+      frameSliderEl.disabled = !playbackEnabled;
+      playButtonEl.disabled = !playbackEnabled;
+      prevButtonEl.disabled = !playbackEnabled || atStart;
+      nextButtonEl.disabled = !playbackEnabled || atEnd;
+      liveInputFieldEl.disabled = !showLiveInput || previewState.liveCommandInFlight;
+      liveSubmitButtonEl.disabled = !showLiveInput || previewState.liveCommandInFlight;
+    }
+
+    function renderStdout() {
+      const text = previewState.localStdoutEntries.map((entry) => {
+        return entry.message.endsWith('\n') ? entry.message : `${entry.message}\n`;
+      }).join('');
+      const lastEntry = previewState.localStdoutEntries[previewState.localStdoutEntries.length - 1];
+
+      stdoutReadoutEl.textContent = lastEntry ? lastEntry.timestamp : 'stdout unavailable';
+      stdoutViewerEl.textContent = text || 'No stdout data';
+      stdoutViewerEl.scrollTop = stdoutViewerEl.scrollHeight;
+    }
+
+    function renderPixelGoalOverlay() {
+      if (!previewState.currentPixelGoal) {
+        pixelGoalMarkerEl.classList.remove('visible');
+        return;
+      }
+
+      const left = `${(previewState.currentPixelGoal.x / 800) * 100}%`;
+      const top = `${(previewState.currentPixelGoal.y / 600) * 100}%`;
+      pixelGoalMarkerEl.style.left = left;
+      pixelGoalMarkerEl.style.top = top;
+      pixelGoalMarkerEl.classList.add('visible');
+    }
+
     function drawTrajectory() {
-      const canvas = document.getElementById('trajectory-canvas');
-      const context = canvas.getContext('2d');
+      const context = trajectoryCanvasEl.getContext('2d');
       const dpr = window.devicePixelRatio || 1;
-      const cssWidth = Math.max(1, Math.floor(canvas.clientWidth));
-      const cssHeight = Math.max(1, Math.floor(canvas.clientHeight));
+      const cssWidth = Math.max(1, Math.floor(trajectoryCanvasEl.clientWidth));
+      const cssHeight = Math.max(1, Math.floor(trajectoryCanvasEl.clientHeight));
       const pixelWidth = Math.floor(cssWidth * dpr);
       const pixelHeight = Math.floor(cssHeight * dpr);
 
-      if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
-        canvas.width = pixelWidth;
-        canvas.height = pixelHeight;
+      if (trajectoryCanvasEl.width !== pixelWidth || trajectoryCanvasEl.height !== pixelHeight) {
+        trajectoryCanvasEl.width = pixelWidth;
+        trajectoryCanvasEl.height = pixelHeight;
       }
 
       context.setTransform(dpr, 0, 0, dpr, 0, 0);
       context.clearRect(0, 0, cssWidth, cssHeight);
 
-      const path = [
-        { x: 0.0, y: 0.0 },
-        { x: 0.28, y: 0.1 },
-        { x: 0.54, y: 0.16 },
-        { x: 0.82, y: 0.28 },
-        { x: 1.12, y: 0.37 },
-        { x: 1.52, y: 0.5 },
-        { x: 1.82, y: 0.61 }
+      const points = [
+        { x: 0.0, y: 0.0, has_yaw: true, yaw: 0.10 },
+        { x: 0.28, y: 0.10, has_yaw: true, yaw: 0.14 },
+        { x: 0.54, y: 0.16, has_yaw: true, yaw: 0.21 },
+        { x: 0.82, y: 0.28, has_yaw: true, yaw: 0.29 },
+        { x: 1.12, y: 0.37, has_yaw: true, yaw: 0.35 },
+        { x: 1.52, y: 0.50, has_yaw: true, yaw: 0.43 },
+        { x: 1.82, y: 0.61, has_yaw: true, yaw: 0.497 }
       ];
-      const plan = [
+
+      const worldPlan = [
         { x: 1.82, y: 0.61 },
         { x: 2.24, y: 0.78 },
         { x: 2.74, y: 1.02 },
         { x: 3.08, y: 1.16 }
       ];
 
-      const all = path.concat(plan);
-      let minX = Infinity;
-      let minY = Infinity;
-      let maxX = -Infinity;
-      let maxY = -Infinity;
+      let minX = Number.POSITIVE_INFINITY;
+      let minY = Number.POSITIVE_INFINITY;
+      let maxX = Number.NEGATIVE_INFINITY;
+      let maxY = Number.NEGATIVE_INFINITY;
 
-      for (const point of all) {
+      for (const point of points) {
+        minX = Math.min(minX, point.x);
+        minY = Math.min(minY, point.y);
+        maxX = Math.max(maxX, point.x);
+        maxY = Math.max(maxY, point.y);
+      }
+
+      for (const point of worldPlan) {
         minX = Math.min(minX, point.x);
         minY = Math.min(minY, point.y);
         maxX = Math.max(maxX, point.x);
@@ -634,7 +859,7 @@ nav : odom frame stable</pre>
       context.strokeRect(0.5, 0.5, cssWidth - 1, cssHeight - 1);
 
       context.beginPath();
-      path.forEach((point, index) => {
+      points.forEach((point, index) => {
         const projected = project(point);
         if (index === 0) {
           context.moveTo(projected.x, projected.y);
@@ -647,7 +872,7 @@ nav : odom frame stable</pre>
       context.stroke();
 
       context.beginPath();
-      plan.forEach((point, index) => {
+      worldPlan.forEach((point, index) => {
         const projected = project(point);
         if (index === 0) {
           context.moveTo(projected.x, projected.y);
@@ -661,31 +886,31 @@ nav : odom frame stable</pre>
       context.stroke();
       context.setLineDash([]);
 
-      const current = project(path[path.length - 1]);
-      const planEnd = project(plan[plan.length - 1]);
+      const point = points[points.length - 1];
+      const projected = project(point);
 
+      const planEnd = project(worldPlan[worldPlan.length - 1]);
       context.beginPath();
       context.arc(planEnd.x, planEnd.y, 4, 0, Math.PI * 2);
       context.fillStyle = '#2563eb';
       context.fill();
 
       context.beginPath();
-      context.arc(current.x, current.y, 6, 0, Math.PI * 2);
+      context.arc(projected.x, projected.y, 6, 0, Math.PI * 2);
       context.fillStyle = '#1f2933';
       context.fill();
       context.lineWidth = 2;
       context.strokeStyle = '#fff8ef';
       context.stroke();
 
-      const yaw = 28.5 * Math.PI / 180;
       const headingLength = 20;
-      const tipX = current.x + Math.cos(yaw) * headingLength;
-      const tipY = current.y - Math.sin(yaw) * headingLength;
+      const tipX = projected.x + Math.cos(point.yaw) * headingLength;
+      const tipY = projected.y - Math.sin(point.yaw) * headingLength;
       const wingAngle = 0.5;
       const wingLength = 7;
 
       context.beginPath();
-      context.moveTo(current.x, current.y);
+      context.moveTo(projected.x, projected.y);
       context.lineTo(tipX, tipY);
       context.strokeStyle = '#1f2933';
       context.lineWidth = 3;
@@ -694,22 +919,37 @@ nav : odom frame stable</pre>
       context.beginPath();
       context.moveTo(tipX, tipY);
       context.lineTo(
-        tipX - Math.cos(yaw - wingAngle) * wingLength,
-        tipY + Math.sin(yaw - wingAngle) * wingLength
+        tipX - Math.cos(point.yaw - wingAngle) * wingLength,
+        tipY + Math.sin(point.yaw - wingAngle) * wingLength
       );
       context.lineTo(
-        tipX - Math.cos(yaw + wingAngle) * wingLength,
-        tipY + Math.sin(yaw + wingAngle) * wingLength
+        tipX - Math.cos(point.yaw + wingAngle) * wingLength,
+        tipY + Math.sin(point.yaw + wingAngle) * wingLength
       );
       context.closePath();
       context.fillStyle = '#1f2933';
       context.fill();
+
+      poseReadoutEl.textContent = 'x 1.824 · y 0.612 · yaw 28.5° · 2026-04-08T12:48:31.542Z';
     }
 
-    document.getElementById('rgb-preview').src = svgToDataUrl(makeSceneSvg());
-    document.getElementById('depth-preview').src = svgToDataUrl(makeDepthSvg());
-    drawTrajectory();
-    window.addEventListener('resize', drawTrajectory);
+    function renderFrame() {
+      viewerLeftEl.src = svgToDataUrl(makeSceneSvg());
+      viewerRightEl.src = svgToDataUrl(makeDepthSvg());
+      frameLabelEl.textContent = 'Waiting for live frames';
+      frameTimeEl.textContent = 'zenoh stream connected';
+      renderStdout();
+      renderPixelGoalOverlay();
+      drawTrajectory();
+      updateControls();
+    }
+
+    renderTopics();
+    renderFrame();
+    window.addEventListener('resize', () => {
+      renderPixelGoalOverlay();
+      drawTrajectory();
+    });
   </script>
 </body>
 </html>

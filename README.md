@@ -138,6 +138,7 @@ export LD_LIBRARY_PATH="$HOME/.local/lib:$LD_LIBRARY_PATH"
 ### 1. 실시간 소스 실행 (`source=zenoh`)
 ```bash
 ros2 run go2_monitor_cpp monitor_server --source=zenoh
+ros2 run go2_monitor_cpp monitor_server --source=zenoh --endpoint=udp/192.168.0.151:7447 --port=8080
 ```
 브리지 예시:
 ```bash
