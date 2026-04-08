@@ -1,0 +1,715 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>go2 monitor UI preview</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg-top: #fff8ef;
+      --bg-bottom: #efe5d8;
+      --panel: rgba(255, 255, 255, 0.8);
+      --line: #ddd2c3;
+      --ink: #1f2933;
+      --muted: #667085;
+      --accent: #c75c31;
+      --shadow: 0 18px 36px rgba(31, 41, 51, 0.1);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Avenir Next", "Segoe UI", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top left, rgba(255, 255, 255, 0.95), transparent 34%),
+        linear-gradient(180deg, var(--bg-top), var(--bg-bottom));
+    }
+
+    main {
+      max-width: 1344px;
+      margin: 0 auto;
+      padding: 22px 12px 28px;
+    }
+
+    .hero {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: flex-start;
+      margin-bottom: 16px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(24px, 4vw, 38px);
+      line-height: 1;
+      letter-spacing: -0.04em;
+    }
+
+    .subtitle {
+      margin: 12px 0 0;
+      max-width: 900px;
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1.6;
+    }
+
+    .preview-badge {
+      align-self: center;
+      border-radius: 999px;
+      padding: 8px 12px;
+      background: rgba(255, 255, 255, 0.68);
+      border: 1px solid rgba(255, 255, 255, 0.9);
+      box-shadow: var(--shadow);
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 220px minmax(0, 1fr);
+      gap: 16px;
+      align-items: start;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid rgba(255, 255, 255, 0.9);
+      border-radius: 18px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(12px);
+      padding: 13px;
+      min-width: 0;
+    }
+
+    .topics-card {
+      padding: 14px;
+    }
+
+    .section-title {
+      margin: 0 0 10px;
+      font-size: 20px;
+      letter-spacing: -0.03em;
+    }
+
+    .topic-list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: grid;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .topic-item {
+      min-width: 0;
+      padding: 10px 12px;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.76);
+    }
+
+    .topic-name {
+      margin: 0;
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 13px;
+      line-height: 1.4;
+      overflow-wrap: anywhere;
+    }
+
+    .topic-meta {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      align-items: center;
+      min-width: 0;
+      flex-wrap: wrap;
+    }
+
+    .topic-type {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      flex: 1 1 120px;
+    }
+
+    .viewer-controls {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 14px;
+      padding: 0;
+      border: none;
+      background: transparent;
+    }
+
+    .button-row {
+      display: flex;
+      flex-wrap: nowrap;
+      gap: 8px;
+      flex: 0 0 auto;
+    }
+
+    .control-button {
+      appearance: none;
+      border: 0;
+      border-radius: 999px;
+      padding: 9px 13px;
+      background: #1f2933;
+      color: #fff8ef;
+      font: inherit;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: transform 0.16s ease, opacity 0.16s ease, background 0.16s ease;
+    }
+
+    .control-button:hover {
+      transform: translateY(-1px);
+    }
+
+    .control-button.secondary {
+      background: #d9cec0;
+      color: #3d4752;
+    }
+
+    .timeline-row {
+      display: grid;
+      gap: 6px;
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+
+    .timeline-meta {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: center;
+      color: var(--muted);
+      font-size: 12px;
+      min-width: 0;
+    }
+
+    .timeline-meta strong {
+      white-space: nowrap;
+      flex: 0 0 auto;
+    }
+
+    .timeline-meta span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      text-align: right;
+      flex: 1 1 auto;
+    }
+
+    .timeline-row input[type="range"] {
+      width: 100%;
+      accent-color: var(--accent);
+    }
+
+    .viewer-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+
+    .support-grid {
+      margin-top: 14px;
+    }
+
+    .viewer-card {
+      padding: 0;
+      border: none;
+      background: transparent;
+    }
+
+    .viewer-title {
+      margin: 0 0 8px;
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .viewer-frame {
+      width: 100%;
+      aspect-ratio: 4 / 3;
+      position: relative;
+      border-radius: 12px;
+      overflow: hidden;
+      background: #f4ede5;
+      border: 1px solid var(--line);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .viewer-frame img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: block;
+      background: #f8f5f1;
+    }
+
+    .viewer-overlay {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+    }
+
+    .pixel-goal-marker {
+      position: absolute;
+      transform: translate(-50%, -50%);
+      left: 62%;
+      top: 38%;
+    }
+
+    .pixel-goal-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: #e11d48;
+      border: 2px solid #fff8ef;
+      box-shadow: 0 0 0 2px rgba(225, 29, 72, 0.2);
+      display: block;
+    }
+
+    .pixel-goal-label {
+      position: absolute;
+      left: 14px;
+      top: -9px;
+      border-radius: 999px;
+      padding: 3px 8px;
+      background: rgba(31, 41, 51, 0.88);
+      color: #fff8ef;
+      font-size: 11px;
+      font-weight: 700;
+      line-height: 1;
+      white-space: nowrap;
+    }
+
+    .panel-head,
+    .trajectory-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+
+    .stdout-readout,
+    .pose-readout {
+      color: var(--muted);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 12px;
+      text-align: right;
+      word-break: break-word;
+    }
+
+    .stdout-display {
+      margin: 0;
+      width: 100%;
+      height: 256px;
+      padding: 12px 14px;
+      overflow: auto;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: #f8f5f1;
+      color: var(--ink);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
+    .trajectory-stage {
+      position: relative;
+    }
+
+    .trajectory-note {
+      position: absolute;
+      left: 12px;
+      bottom: 10px;
+      margin: 0;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.5;
+      background: rgba(248, 245, 241, 0.92);
+      padding: 2px 6px;
+      border-radius: 8px;
+      pointer-events: none;
+    }
+
+    #trajectory-canvas {
+      width: 100%;
+      height: 256px;
+      display: block;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: #f8f5f1;
+    }
+
+    .preview-footer {
+      margin-top: 16px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    @media (max-width: 900px) {
+      .hero {
+        flex-direction: column;
+      }
+
+      .grid {
+        grid-template-columns: 1fr;
+      }
+
+      .viewer-controls {
+        flex-direction: column;
+        align-items: stretch;
+      }
+
+      .button-row {
+        flex-wrap: wrap;
+      }
+
+      .viewer-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="hero">
+      <div>
+        <h1>go2 monitor</h1>
+        <p class="subtitle">
+          서버 연결 없이 UI 비주얼만 확인하기 위한 정적 미리보기입니다.
+          실제 API, WebSocket, 로봇 데이터 대신 샘플 토픽과 이미지가 표시됩니다.
+        </p>
+      </div>
+      <div class="preview-badge">Static Preview</div>
+    </section>
+
+    <section class="grid">
+      <section class="card topics-card">
+        <h2 class="section-title">Topics</h2>
+        <ul class="topic-list">
+          <li class="topic-item">
+            <p class="topic-name">/camera/color/image_raw</p>
+            <div class="topic-meta"><span class="topic-type">sensor_msgs/msg/Image</span></div>
+          </li>
+          <li class="topic-item">
+            <p class="topic-name">/camera/aligned_depth_to_color/image_raw</p>
+            <div class="topic-meta"><span class="topic-type">sensor_msgs/msg/Image</span></div>
+          </li>
+          <li class="topic-item">
+            <p class="topic-name">/odometry/filtered</p>
+            <div class="topic-meta"><span class="topic-type">nav_msgs/msg/Odometry</span></div>
+          </li>
+          <li class="topic-item">
+            <p class="topic-name">print</p>
+            <div class="topic-meta"><span class="topic-type">stdout stream</span></div>
+          </li>
+        </ul>
+      </section>
+
+      <section class="card">
+        <h2 class="section-title">Viewers</h2>
+
+        <section class="viewer-controls">
+          <div class="button-row">
+            <button class="control-button secondary" type="button">Prev</button>
+            <button class="control-button" type="button">Play</button>
+            <button class="control-button secondary" type="button">Next</button>
+          </div>
+
+          <div class="timeline-row">
+            <div class="timeline-meta">
+              <strong>Frame 12 / 128</strong>
+              <span>2026-04-08T14:13:21.412Z</span>
+            </div>
+            <input type="range" min="0" max="127" value="11" step="1">
+          </div>
+        </section>
+
+        <div class="viewer-grid">
+          <section class="viewer-card">
+            <p class="viewer-title">RGB</p>
+            <div class="viewer-frame">
+              <img id="rgb-preview" alt="RGB preview">
+              <div class="viewer-overlay">
+                <div class="pixel-goal-marker">
+                  <span class="pixel-goal-dot"></span>
+                  <span class="pixel-goal-label">pixel goal</span>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="viewer-card">
+            <p class="viewer-title">Depth</p>
+            <div class="viewer-frame">
+              <img id="depth-preview" alt="Depth preview">
+            </div>
+          </section>
+        </div>
+
+        <div class="viewer-grid support-grid">
+          <section class="viewer-card">
+            <div class="panel-head">
+              <p class="viewer-title">Print / Stdout</p>
+              <div class="stdout-readout">2026-04-08T14:13:22.009Z</div>
+            </div>
+            <pre class="stdout-display">User : kitchen doorway toward the charging dock
+GO2 : route updated, approaching hallway
+planner : {"pixel_goal":[428,190],"trajectory":[{"x":0.0,"y":0.0},{"x":0.5,"y":0.1},{"x":1.1,"y":0.35},{"x":1.8,"y":0.65}]}
+camera : rgb + depth synchronized
+nav : odom frame stable</pre>
+          </section>
+
+          <section class="viewer-card">
+            <div class="trajectory-head">
+              <p class="viewer-title">Trajectory</p>
+              <div class="pose-readout">x 1.824 · y 0.612 · yaw 28.5° · 2026-04-08T14:13:21.412Z</div>
+            </div>
+            <div class="trajectory-stage">
+              <canvas id="trajectory-canvas"></canvas>
+              <p class="trajectory-note">초기 경로는 정확하지 않을 수 있음</p>
+            </div>
+          </section>
+        </div>
+      </section>
+    </section>
+
+    <p class="preview-footer">
+      파일을 더블클릭하거나 브라우저에서 직접 열면 됩니다. 실제 서비스 UI를 바꿀 때는
+      <code>src/go2_monitor_cpp/src/web_server.cpp</code>를 수정하면 됩니다.
+    </p>
+  </main>
+
+  <script>
+    function makeSceneSvg() {
+      return `
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600">
+          <defs>
+            <linearGradient id="floor" x1="0" x2="0" y1="0" y2="1">
+              <stop offset="0%" stop-color="#f6efe6"/>
+              <stop offset="100%" stop-color="#d7c1a2"/>
+            </linearGradient>
+          </defs>
+          <rect width="800" height="600" fill="#f4ede5"/>
+          <rect x="0" y="350" width="800" height="250" fill="url(#floor)"/>
+          <rect x="60" y="90" width="200" height="260" rx="12" fill="#d9e4f0"/>
+          <rect x="85" y="120" width="150" height="190" rx="8" fill="#f7fbff"/>
+          <rect x="320" y="80" width="160" height="230" rx="18" fill="#e6d7c7"/>
+          <rect x="520" y="115" width="200" height="205" rx="16" fill="#b8c7c9"/>
+          <rect x="540" y="135" width="160" height="165" rx="8" fill="#dfe9ea"/>
+          <ellipse cx="410" cy="408" rx="115" ry="33" fill="#7b5e4f" opacity="0.28"/>
+          <g transform="translate(345 332)">
+            <rect x="-24" y="-12" width="96" height="38" rx="18" fill="#dca15c"/>
+            <rect x="0" y="-34" width="62" height="32" rx="14" fill="#f0b66a"/>
+            <circle cx="8" cy="34" r="13" fill="#2f3640"/>
+            <circle cx="66" cy="34" r="13" fill="#2f3640"/>
+            <circle cx="58" cy="-6" r="6" fill="#1f2933"/>
+          </g>
+          <path d="M150 455 C270 430, 380 400, 490 360 S670 295, 720 270" fill="none" stroke="#c75c31" stroke-width="10" stroke-linecap="round" opacity="0.75"/>
+          <circle cx="620" cy="250" r="16" fill="#e11d48"/>
+          <circle cx="620" cy="250" r="7" fill="#fff8ef"/>
+        </svg>`;
+    }
+
+    function makeDepthSvg() {
+      return `
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600">
+          <defs>
+            <linearGradient id="depth" x1="0" x2="1" y1="0" y2="1">
+              <stop offset="0%" stop-color="#09111f"/>
+              <stop offset="20%" stop-color="#17436c"/>
+              <stop offset="45%" stop-color="#2c7fb8"/>
+              <stop offset="70%" stop-color="#91cf60"/>
+              <stop offset="100%" stop-color="#fddc6c"/>
+            </linearGradient>
+          </defs>
+          <rect width="800" height="600" fill="#0f1720"/>
+          <rect width="800" height="600" fill="url(#depth)" opacity="0.88"/>
+          <ellipse cx="410" cy="410" rx="150" ry="44" fill="#1c3550"/>
+          <ellipse cx="410" cy="410" rx="100" ry="30" fill="#4dd0e1"/>
+          <rect x="75" y="95" width="190" height="250" rx="18" fill="#2f4858" opacity="0.7"/>
+          <rect x="315" y="80" width="170" height="230" rx="18" fill="#60a5fa" opacity="0.4"/>
+          <rect x="515" y="115" width="205" height="210" rx="18" fill="#fde68a" opacity="0.55"/>
+          <path d="M148 456 C266 428, 378 398, 492 356 S666 297, 718 272" fill="none" stroke="#ff7f50" stroke-width="14" stroke-linecap="round" opacity="0.75"/>
+          <circle cx="620" cy="250" r="18" fill="#fff8ef"/>
+          <circle cx="620" cy="250" r="10" fill="#e11d48"/>
+        </svg>`;
+    }
+
+    function svgToDataUrl(svg) {
+      return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
+    }
+
+    function drawTrajectory() {
+      const canvas = document.getElementById('trajectory-canvas');
+      const context = canvas.getContext('2d');
+      const dpr = window.devicePixelRatio || 1;
+      const cssWidth = Math.max(1, Math.floor(canvas.clientWidth));
+      const cssHeight = Math.max(1, Math.floor(canvas.clientHeight));
+      const pixelWidth = Math.floor(cssWidth * dpr);
+      const pixelHeight = Math.floor(cssHeight * dpr);
+
+      if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+        canvas.width = pixelWidth;
+        canvas.height = pixelHeight;
+      }
+
+      context.setTransform(dpr, 0, 0, dpr, 0, 0);
+      context.clearRect(0, 0, cssWidth, cssHeight);
+
+      const path = [
+        { x: 0.0, y: 0.0 },
+        { x: 0.28, y: 0.1 },
+        { x: 0.54, y: 0.16 },
+        { x: 0.82, y: 0.28 },
+        { x: 1.12, y: 0.37 },
+        { x: 1.52, y: 0.5 },
+        { x: 1.82, y: 0.61 }
+      ];
+      const plan = [
+        { x: 1.82, y: 0.61 },
+        { x: 2.24, y: 0.78 },
+        { x: 2.74, y: 1.02 },
+        { x: 3.08, y: 1.16 }
+      ];
+
+      const all = path.concat(plan);
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+
+      for (const point of all) {
+        minX = Math.min(minX, point.x);
+        minY = Math.min(minY, point.y);
+        maxX = Math.max(maxX, point.x);
+        maxY = Math.max(maxY, point.y);
+      }
+
+      const padding = 24;
+      const spanX = Math.max(maxX - minX, 1e-6);
+      const spanY = Math.max(maxY - minY, 1e-6);
+      const scale = Math.min(
+        (cssWidth - padding * 2) / spanX,
+        (cssHeight - padding * 2) / spanY
+      );
+      const offsetX = (cssWidth - spanX * scale) / 2;
+      const offsetY = (cssHeight - spanY * scale) / 2;
+
+      function project(point) {
+        return {
+          x: offsetX + (point.x - minX) * scale,
+          y: cssHeight - (offsetY + (point.y - minY) * scale)
+        };
+      }
+
+      context.strokeStyle = '#d9cec0';
+      context.lineWidth = 1;
+      context.strokeRect(0.5, 0.5, cssWidth - 1, cssHeight - 1);
+
+      context.beginPath();
+      path.forEach((point, index) => {
+        const projected = project(point);
+        if (index === 0) {
+          context.moveTo(projected.x, projected.y);
+        } else {
+          context.lineTo(projected.x, projected.y);
+        }
+      });
+      context.strokeStyle = '#c75c31';
+      context.lineWidth = 2;
+      context.stroke();
+
+      context.beginPath();
+      plan.forEach((point, index) => {
+        const projected = project(point);
+        if (index === 0) {
+          context.moveTo(projected.x, projected.y);
+        } else {
+          context.lineTo(projected.x, projected.y);
+        }
+      });
+      context.strokeStyle = '#2563eb';
+      context.lineWidth = 3;
+      context.setLineDash([8, 6]);
+      context.stroke();
+      context.setLineDash([]);
+
+      const current = project(path[path.length - 1]);
+      const planEnd = project(plan[plan.length - 1]);
+
+      context.beginPath();
+      context.arc(planEnd.x, planEnd.y, 4, 0, Math.PI * 2);
+      context.fillStyle = '#2563eb';
+      context.fill();
+
+      context.beginPath();
+      context.arc(current.x, current.y, 6, 0, Math.PI * 2);
+      context.fillStyle = '#1f2933';
+      context.fill();
+      context.lineWidth = 2;
+      context.strokeStyle = '#fff8ef';
+      context.stroke();
+
+      const yaw = 28.5 * Math.PI / 180;
+      const headingLength = 20;
+      const tipX = current.x + Math.cos(yaw) * headingLength;
+      const tipY = current.y - Math.sin(yaw) * headingLength;
+      const wingAngle = 0.5;
+      const wingLength = 7;
+
+      context.beginPath();
+      context.moveTo(current.x, current.y);
+      context.lineTo(tipX, tipY);
+      context.strokeStyle = '#1f2933';
+      context.lineWidth = 3;
+      context.stroke();
+
+      context.beginPath();
+      context.moveTo(tipX, tipY);
+      context.lineTo(
+        tipX - Math.cos(yaw - wingAngle) * wingLength,
+        tipY + Math.sin(yaw - wingAngle) * wingLength
+      );
+      context.lineTo(
+        tipX - Math.cos(yaw + wingAngle) * wingLength,
+        tipY + Math.sin(yaw + wingAngle) * wingLength
+      );
+      context.closePath();
+      context.fillStyle = '#1f2933';
+      context.fill();
+    }
+
+    document.getElementById('rgb-preview').src = svgToDataUrl(makeSceneSvg());
+    document.getElementById('depth-preview').src = svgToDataUrl(makeDepthSvg());
+    drawTrajectory();
+    window.addEventListener('resize', drawTrajectory);
+  </script>
+</body>
+</html>
