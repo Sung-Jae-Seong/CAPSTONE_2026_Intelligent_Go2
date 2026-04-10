@@ -140,6 +140,14 @@ export LD_LIBRARY_PATH="$HOME/.local/lib:$LD_LIBRARY_PATH"
 ros2 run go2_monitor_cpp monitor_server --source=zenoh
 ros2 run go2_monitor_cpp monitor_server --source=zenoh --endpoint=udp/192.168.0.151:7447 --port=8080
 ```
+
+'''
+source /opt/ros/humble/setup.bash
+cd /home/alice/go2_monitor
+source install/setup.bash
+ros2 run go2_monitor_cpp monitor_server --source=zenoh
+
+'''
 브리지 예시:
 ```bash
 zenoh-bridge-ros2dds -l udp/0.0.0.0:7447

@@ -802,16 +802,15 @@ std::string WebServer::index_html() const {
 
     .viewer-grid {
       display: grid;
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
       gap: 14px;
-    }
-
-    .viewer-grid.single-panel {
-      grid-template-columns: 1fr;
+      align-items: start;
     }
 
     .support-grid {
       margin-top: 14px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
     }
 
     .viewer-card {
@@ -898,6 +897,11 @@ std::string WebServer::index_html() const {
       margin-bottom: 10px;
     }
 
+    .panel-head .viewer-title,
+    .trajectory-head .viewer-title {
+      margin-bottom: 0;
+    }
+
     .stdout-readout {
       color: var(--muted);
       font-family: "SFMono-Regular", Consolas, monospace;
@@ -909,7 +913,7 @@ std::string WebServer::index_html() const {
     .stdout-display {
       margin: 0;
       width: 100%;
-      height: 256px;
+      height: 300px;
       padding: 12px 14px;
       overflow: auto;
       border-radius: 12px;
@@ -979,19 +983,12 @@ std::string WebServer::index_html() const {
       overflow-wrap: anywhere;
     }
 
-    .trajectory-panel {
-      margin-top: 0;
-      padding: 0;
-      border: none;
-      background: transparent;
-    }
-
     .trajectory-head {
       display: flex;
       justify-content: space-between;
       gap: 10px;
       align-items: center;
-      margin-bottom: 10px;
+      margin-bottom: 8px;
     }
 
     .pose-readout {
@@ -1018,11 +1015,13 @@ std::string WebServer::index_html() const {
 
     .trajectory-stage {
       position: relative;
+      width: 100%;
+      aspect-ratio: 4 / 3;
     }
 
     #trajectory-canvas {
       width: 100%;
-      height: 256px;
+      height: 100%;
       display: block;
       border-radius: 12px;
       border: 1px solid var(--line);
@@ -1113,19 +1112,19 @@ std::string WebServer::index_html() const {
             </div>
           </section>
 
-          <section class="viewer-card" id="depth-card">
-            <p class="viewer-title">Depth</p>
-            <div class="viewer-frame">
-              <img
-                id="viewer-right"
-                alt="Depth viewer"
-                src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='800' height='600'><rect width='100%' height='100%' fill='%23f4ede5'/><text x='50%' y='50%' dominant-baseline='middle' text-anchor='middle' font-family='Segoe UI, sans-serif' font-size='28' fill='%23667085'>No image</text></svg>"
-              >
+          <section class="viewer-card" id="trajectory-card">
+            <div class="trajectory-head">
+              <p class="viewer-title">Trajectory</p>
+              <div class="pose-readout" id="pose-readout">odometry unavailable</div>
+            </div>
+            <div class="trajectory-stage">
+              <canvas id="trajectory-canvas"></canvas>
+              <p class="trajectory-note">초기 경로는 정확하지 않을 수 있음</p>
             </div>
           </section>
         </div>
 
-        <div class="viewer-grid support-grid" id="support-grid">
+        <div class="support-grid" id="support-grid">
           <section class="viewer-card" id="stdout-card">
             <div class="panel-head">
               <p class="viewer-title">Print / Stdout</p>
@@ -1157,17 +1156,6 @@ std::string WebServer::index_html() const {
               >↵</button>
             </section>
           </section>
-
-          <section class="viewer-card trajectory-panel" id="trajectory-card">
-            <div class="trajectory-head">
-              <p class="viewer-title">Trajectory</p>
-              <div class="pose-readout" id="pose-readout">odometry unavailable</div>
-            </div>
-            <div class="trajectory-stage">
-              <canvas id="trajectory-canvas"></canvas>
-              <p class="trajectory-note">초기 경로는 정확하지 않을 수 있음</p>
-            </div>
-          </section>
         </div>
       </section>
     </section>
@@ -1176,13 +1164,7 @@ std::string WebServer::index_html() const {
   <script>
     const topicsEl = document.getElementById('topics');
     const viewerLeftEl = document.getElementById('viewer-left');
-    const viewerRightEl = document.getElementById('viewer-right');
     const pixelGoalMarkerEl = document.getElementById('pixel-goal-marker');
-    const viewerGridEl = document.getElementById('viewer-grid');
-    const supportGridEl = document.getElementById('support-grid');
-    const depthCardEl = document.getElementById('depth-card');
-    const stdoutCardEl = document.getElementById('stdout-card');
-    const trajectoryCardEl = document.getElementById('trajectory-card');
     const viewerControlsEl = document.getElementById('viewer-controls');
     const frameSliderEl = document.getElementById('frame-slider');
     const frameLabelEl = document.getElementById('frame-label');
@@ -1250,20 +1232,6 @@ std::string WebServer::index_html() const {
       const atEnd = viewerState.currentIndex >= viewerState.timeline.length - 1;
       const isPlaying = viewerState.timerId !== null;
       const showPlaybackControls = viewerState.supportsPlayback;
-      const showZenohStdoutLayout = !viewerState.supportsPlayback && viewerState.sourceMode === 'zenoh';
-
-      depthCardEl.hidden = showZenohStdoutLayout;
-      if (showZenohStdoutLayout) {
-        supportGridEl.classList.add('single-panel');
-        if (stdoutCardEl.parentElement !== viewerGridEl) {
-          viewerGridEl.appendChild(stdoutCardEl);
-        }
-      } else {
-        supportGridEl.classList.remove('single-panel');
-        if (stdoutCardEl.parentElement !== supportGridEl) {
-          supportGridEl.insertBefore(stdoutCardEl, trajectoryCardEl);
-        }
-      }
 
       viewerControlsEl.hidden = !showPlaybackControls;
       frameSliderEl.disabled = !playbackEnabled;
@@ -1826,9 +1794,6 @@ std::string WebServer::index_html() const {
       }
 
       updateImageSrc(viewerLeftEl, frame.rgb_url);
-      if (viewerState.sourceMode !== 'zenoh' || viewerState.supportsPlayback) {
-        updateImageSrc(viewerRightEl, frame.depth_url);
-      }
       frameSliderEl.max = String(viewerState.timeline.length - 1);
       frameSliderEl.value = String(viewerState.currentIndex);
       frameLabelEl.textContent = viewerState.supportsPlayback
