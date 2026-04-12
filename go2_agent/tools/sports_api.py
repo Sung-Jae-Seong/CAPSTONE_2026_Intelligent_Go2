@@ -5,7 +5,7 @@ import time as time_module
 from langchain.agents import tool
 
 
-MOVE_TOPIC = "/api/obstacles_avoid/request" # "/api/sport/request"
+MOVE_TOPIC = "/api/sport/request"
 MOVE_TYPE = "unitree_api/msg/Request"
 MOVE_RATE = "10"
 
