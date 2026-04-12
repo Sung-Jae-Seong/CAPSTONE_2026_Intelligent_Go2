@@ -1,0 +1,9 @@
+.env
+DPVO_TRT/
+DPVO/
+__pycache__/
+memo
+
+*__pycache__/*
+tools/__pycache__/
+
