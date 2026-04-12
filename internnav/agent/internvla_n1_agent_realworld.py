@@ -22,11 +22,25 @@ from internnav.model.utils.vln_utils import S2Output, split_and_clean, traj_to_a
 
 DEFAULT_IMAGE_TOKEN = "<image>"
 
+# ------------------- YOLO ------------------
+sys.path.append('/home/tenstorrent/LOVON')
+from ultralytics import YOLO
+from models.api_object_extraction import SequenceToSequenceClassAPI
+
+import logging
+logging.getLogger('ultralytics').setLevel(logging.ERROR)
+
+# LOVON 모델 절대경로 하드코딩
+YOLO_MODEL_PATH = "/home/tenstorrent/LOVON/deploy/models/yolo-models/yolo11x.pt"
+OBJECT_EXTRACTION_MODEL_PATH = "/home/tenstorrent/LOVON/models/model_object_extraction_n1000000_d64_h4_l2_f256_msl64_hold_success_legacy"
+LOVON_TOKENIZER_PATH = "/home/tenstorrent/LOVON/models/tokenizer_language2motion_n1000000"
+# ------------------------------------------------
 
 class InternVLAN1AsyncAgent:
     def __init__(self, args):
         self.device = torch.device(args.device)
         self.save_dir = "test_data/" + datetime.now().strftime("%Y%m%d_%H%M%S")
+        os.makedirs(self.save_dir, exist_ok=True)
         print(f"args.model_path{args.model_path}")
         self.model = InternVLAN1ForCausalLM.from_pretrained(
             args.model_path,
@@ -43,6 +57,8 @@ class InternVLAN1AsyncAgent:
         self.resize_w = args.resize_w
         self.resize_h = args.resize_h
         self.num_history = args.num_history
+        # S2 Inference gap
+        # S1 is inferred every time
         self.PLAN_STEP_GAP = args.plan_step_gap
 
         prompt = "You are an autonomous navigation assistant. Your task is to <instruction>. Where should you go next to stay on track? Please output the next waypoint's coordinates in the image. Please output STOP when you have successfully completed the task."
@@ -84,6 +100,15 @@ class InternVLAN1AsyncAgent:
         self.pixel_goal_rgb = None
         self.pixel_goal_depth = None
 
+        # YOLO + Object Extractor 초기화 (LOVON 절대경로)
+        self.yolo_model = YOLO(YOLO_MODEL_PATH)
+        self.object_extractor = SequenceToSequenceClassAPI(
+            model_path=OBJECT_EXTRACTION_MODEL_PATH,
+            tokenizer_path=LOVON_TOKENIZER_PATH,
+        )
+		# confidence score의 threshold 초기화 (default=0.5)
+        self.yolo_conf_threshold = getattr(args, 'yolo_conf_threshold', 0.3)
+
     def reset(self):
         self.rgb_list = []
         self.depth_list = []
@@ -101,6 +126,8 @@ class InternVLAN1AsyncAgent:
 
         self.save_dir = "test_data/" + datetime.now().strftime("%Y%m%d_%H%M%S")
         os.makedirs(self.save_dir, exist_ok=True)
+        self.input_images = []
+        torch.cuda.empty_cache()
 
     def parse_actions(self, output):
         action_patterns = '|'.join(re.escape(action) for action in self.actions2idx)
@@ -124,11 +151,68 @@ class InternVLAN1AsyncAgent:
         angular_vel = np.clip(angular_vel, -0.5, 0.5)
         return linear_vel, angular_vel
 
+    def _find_target_bbox(self, yolo_results, target_object):
+        """YOLO 결과에서 target_object의 가장 높은 confidence bbox 중심 반환.
+
+        Args:
+            yolo_results: YOLO model inference 결과
+            target_object: 찾으려는 객체 이름 (e.g., "chair", "person")
+
+        Returns:
+            (cx, cy, conf) tuple in original image pixel coordinates + confidence,
+            or None if not found or confidence below threshold
+        """
+        best_conf = 0.0
+        best_center = None
+        best_bbox = None
+        for result in yolo_results:
+            for box in result.boxes:
+                class_name = result.names[int(box.cls)]
+                conf = float(box.conf)
+                if class_name == target_object and conf > best_conf:
+                    best_conf = conf
+                    x1, y1, x2, y2 = box.xyxy[0].tolist()
+                    best_center = ((x1 + x2) / 2, (y1 + y2) / 2)
+                    best_bbox = (int(x1), int(y1), int(x2), int(y2))
+
+        # threshold 미만이면 무시하고 None 반환
+        if best_center is not None and best_conf < self.yolo_conf_threshold:
+            print(
+                f"[YOLO] target={target_object} detected but confidence "
+                f"{best_conf:.3f} < threshold {self.yolo_conf_threshold}, ignoring."
+            )
+            return None
+
+        if best_center is not None:
+            return (best_center[0], best_center[1], best_conf, best_bbox)
+        return None
+
+    def _scale_yolo_to_llm_coords(self, cx, cy, orig_h, orig_w):
+        """YOLO 좌표(원본 해상도)를 LLM 좌표(리사이즈 해상도)로 스케일링.
+
+        YOLO는 원본 이미지 해상도에서 동작하고,
+        LLM은 resize_w x resize_h로 리사이즈된 이미지에서 좌표를 출력하므로
+        좌표계를 맞춰야 한다.
+
+        Args:
+            cx, cy: YOLO bbox 중심 (원본 해상도 기준 pixel 좌표)
+            orig_h, orig_w: 원본 이미지의 높이, 너비
+
+        Returns:
+            (cx_scaled, cy_scaled): LLM 좌표계로 스케일링된 정수 좌표
+        """
+        scale_x = self.resize_w / orig_w
+        scale_y = self.resize_h / orig_h
+        cx_scaled = int(cx * scale_x)
+        cy_scaled = int(cy * scale_y)
+        return cx_scaled, cy_scaled
+
     def step(self, rgb, depth, pose, instruction, intrinsic, look_down=False):
         dual_sys_output = S2Output()
+        yolo_output = None
         no_output_flag = self.output_action is None and self.output_latent is None
         if (self.episode_idx - self.last_s2_idx > self.PLAN_STEP_GAP) or look_down or no_output_flag:
-            self.output_action, self.output_latent, self.output_pixel = self.step_s2(
+            self.output_action, self.output_latent, self.output_pixel, yolo_output = self.step_s2(
                 rgb, depth, pose, instruction, intrinsic, look_down
             )
             self.last_s2_idx = self.episode_idx
@@ -142,10 +226,10 @@ class InternVLAN1AsyncAgent:
             dual_sys_output.output_action = copy.deepcopy(self.output_action)
             self.output_action = None
         elif self.output_latent is not None:
-            processed_pixel_rgb = np.array(Image.fromarray(self.pixel_goal_rgb).resize((224, 224))) / 255
-            processed_pixel_depth = np.array(Image.fromarray(self.pixel_goal_depth).resize((224, 224)))
-            processed_rgb = np.array(Image.fromarray(rgb).resize((224, 224))) / 255
-            processed_depth = np.array(Image.fromarray(depth).resize((224, 224)))
+            processed_pixel_rgb = np.array(Image.fromarray(self.pixel_goal_rgb).resize((224, 224)), dtype=np.float32) / 255.0
+            processed_pixel_depth = np.array(Image.fromarray(self.pixel_goal_depth).resize((224, 224)), dtype=np.float32)
+            processed_rgb = np.array(Image.fromarray(rgb).resize((224, 224)), dtype=np.float32) / 255.0
+            processed_depth = np.array(Image.fromarray(depth).resize((224, 224)), dtype=np.float32)
             rgbs = (
                 torch.stack([torch.from_numpy(processed_pixel_rgb), torch.from_numpy(processed_rgb)])
                 .unsqueeze(0)
@@ -161,7 +245,7 @@ class InternVLAN1AsyncAgent:
 
             dual_sys_output.output_trajectory = traj_to_actions(trajectories, use_discrate_action=False)
 
-        return dual_sys_output
+        return dual_sys_output, yolo_output
 
     def step_s2(self, rgb, depth, pose, instruction, intrinsic, look_down=False):
         image = Image.fromarray(rgb).convert('RGB')
@@ -176,7 +260,7 @@ class InternVLAN1AsyncAgent:
             self.past_key_values = None
 
             sources = copy.deepcopy(self.conversation)
-            sources[0]["value"] = sources[0]["value"].replace('<instruction>.', instruction)
+            sources[0]["value"] = sources[0]["value"].replace('<instruction>', instruction)
             cur_images = self.rgb_list[-1:]
             if self.episode_idx == 0:
                 history_id = []
@@ -198,7 +282,10 @@ class InternVLAN1AsyncAgent:
                 {'role': 'assistant', 'content': [{'type': 'text', 'text': self.llm_output}]}
             )
 
-        prompt = self.conjunctions[0] + DEFAULT_IMAGE_TOKEN
+        ############################## CHANGED
+        # prompt = self.conjunctions[0] + DEFAULT_IMAGE_TOKEN
+        prompt = self.conjunctions[-1] + DEFAULT_IMAGE_TOKEN
+        ############################## CHANGED
         sources[0]["value"] += f" {prompt}."
         prompt_instruction = copy.deepcopy(sources[0]["value"])
         parts = split_and_clean(prompt_instruction)
@@ -216,16 +303,24 @@ class InternVLAN1AsyncAgent:
         text = self.processor.apply_chat_template(self.conversation_history, tokenize=False, add_generation_prompt=True)
 
         inputs = self.processor(text=[text], images=self.input_images, return_tensors="pt").to(self.device)
+
+        # ---- YOLO detection (LLM generate 전에 실행) ----
+        target_object = self.object_extractor.predict(instruction)
+        rgb_bgr = rgb[:, :, ::-1]  # RGB → BGR (YOLO expects BGR)
+        yolo_results = self.yolo_model(rgb_bgr, verbose=False)
+        yolo_detection = self._find_target_bbox(yolo_results, target_object)
+        yolo_center = (yolo_detection[0], yolo_detection[1]) if yolo_detection else None
+        yolo_conf = yolo_detection[2] if yolo_detection else None
+        yolo_bbox = yolo_detection[3] if yolo_detection else None
+        yolo_output = None  # YOLO 감지 결과 (감지 시 채워짐)
+
         t0 = time.time()
-        with torch.no_grad():
+        with torch.inference_mode():
             outputs = self.model.generate(
                 **inputs,
                 max_new_tokens=128,
                 do_sample=False,
-                # use_cache=True,
-                # past_key_values=self.past_key_values,
                 return_dict_in_generate=True,
-                # raw_input_ids=copy.deepcopy(inputs.input_ids),
             )
         output_ids = outputs.sequences
 
@@ -233,25 +328,84 @@ class InternVLAN1AsyncAgent:
         self.llm_output = self.processor.tokenizer.decode(
             output_ids[0][inputs.input_ids.shape[1] :], skip_special_tokens=True
         )
+        is_pixel_goal = bool(re.search(r'\d', self.llm_output))
+        if not is_pixel_goal and self.llm_output != 'STOP':
+            self.llm_output = self.llm_output[0]
         with open(f"{self.save_dir}/llm_output_{self.episode_idx: 04d}.txt", 'w') as f:
             f.write(self.llm_output)
         self.last_output_ids = copy.deepcopy(output_ids[0])
         self.past_key_values = copy.deepcopy(outputs.past_key_values)
         print(f"output {self.episode_idx}  {self.llm_output} cost: {t1 - t0}s")
-        if bool(re.search(r'\d', self.llm_output)):
+
+        # ---- YOLO detected (confidence >= threshold(default: 0.3)) → token replacement로 pixel goal 강제 ----
+        if yolo_center is not None:
+            orig_h, orig_w = rgb.shape[:2]
+            # YOLO 좌표(원본 해상도) → LLM 좌표(384x384 리사이즈 해상도)로 스케일링
+            cx_scaled, cy_scaled = self._scale_yolo_to_llm_coords(
+                yolo_center[0], yolo_center[1], orig_h, orig_w
+            )
+            yolo_coord_str = f"{cx_scaled}, {cy_scaled}"
+            yolo_output = {
+                'target': target_object,
+                'confidence': yolo_conf,
+                'coord': yolo_coord_str,
+                'bbox': yolo_bbox,
+            }
+            yolo_tokens = self.processor.tokenizer.encode(
+                yolo_coord_str, add_special_tokens=False
+            )
+            yolo_token_ids = torch.tensor(
+                [yolo_tokens], device=output_ids.device
+            )
+
+            # 입력 토큰 유지 + 생성된 좌표 토큰을 YOLO 좌표 토큰으로 교체
+            input_len = inputs.input_ids.shape[1]
+            modified_output_ids = torch.cat([
+                output_ids[:, :input_len],
+                yolo_token_ids,
+            ], dim=1)
+
+            pixel_goal = [cy_scaled, cx_scaled]  # [y, x] LLM 좌표계
+            image_grid_thw = torch.cat(
+                [thw.unsqueeze(0) for thw in inputs.image_grid_thw], dim=0
+            )
+            pixel_values = inputs.pixel_values
+            with torch.inference_mode():
+                traj_latents = self.model.generate_latents(
+                    modified_output_ids, pixel_values, image_grid_thw
+                )
+            traj_latents = traj_latents.clone()
+            print(
+                f"[YOLO] target={target_object}, conf={yolo_conf:.3f}, "
+                f"yolo_coord={yolo_coord_str}, llm_output={self.llm_output}"
+            )
+            del outputs, inputs, output_ids, pixel_values, image_grid_thw
+            torch.cuda.empty_cache()
+            return None, traj_latents, pixel_goal, yolo_output
+
+        # ---- YOLO 미감지 → 기존 LLM 기반 분기 유지 ----
+        if is_pixel_goal:
             coord = [int(c) for c in re.findall(r'\d+', self.llm_output)]
             pixel_goal = [int(coord[1]), int(coord[0])]
             image_grid_thw = torch.cat([thw.unsqueeze(0) for thw in inputs.image_grid_thw], dim=0)
             pixel_values = inputs.pixel_values
             t0 = time.time()
-            with torch.no_grad():
+            with torch.inference_mode():
                 traj_latents = self.model.generate_latents(output_ids, pixel_values, image_grid_thw)
-                return None, traj_latents, pixel_goal
-
+            traj_latents = traj_latents.clone()
+            del outputs
+            del inputs
+            del output_ids
+            del pixel_values
+            del image_grid_thw
+            torch.cuda.empty_cache()
+            return None, traj_latents, pixel_goal, None
         else:
             action_seq = self.parse_actions(self.llm_output)
-            return action_seq, None, None
+            return action_seq, None, None, None
 
     def step_s1(self, latent, rgb, depth):
-        all_trajs = self.model.generate_traj(latent, rgb, depth)
+        latent = latent.to(self.device, non_blocking=True)
+        with torch.inference_mode():
+            all_trajs = self.model.generate_traj(latent, rgb, depth)
         return all_trajs
