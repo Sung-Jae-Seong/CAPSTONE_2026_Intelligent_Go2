@@ -41,7 +41,7 @@ output_dir = ''
 
 
 ######## instruction update
-instruction = "approach to yellow corn"
+instruction = "approach to the ball"
 
 @app.route("/update_instruction", methods=["POST"])
 def update_instruction():
@@ -133,6 +133,10 @@ def eval_dual():
             # YOLO bbox viz
             if yolo_output is not None and yolo_output.get('bbox') is not None:
                 x1, y1, x2, y2 = yolo_output['bbox']
+                x1 = max(0, min(orig_w - 1, int(x1)))
+                y1 = max(0, min(orig_h - 1, int(y1)))
+                x2 = max(0, min(orig_w - 1, int(x2)))
+                y2 = max(0, min(orig_h - 1, int(y2)))
                 conf = yolo_output['confidence']
                 target = yolo_output['target']
                 color = (0, 255, 0)  # 녹색 (threshold 이상, 사용됨)
@@ -140,11 +144,14 @@ def eval_dual():
                 cv2.rectangle(viz_img, (x1, y1), (x2, y2), color, 3)
                 cv2.putText(viz_img, label, (x1, max(y1 - 8, 16)),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+                print("!!!!!!!!!!! YOLO detected")
+                print(f"YOLO output: {yolo_output}")
 
             viz_img = cv2.resize(viz_img, (orig_w // 2, orig_h // 2))
 
             msg = bridge.cv2_to_imgmsg(viz_img, encoding="bgr8")
             viz_pub.publish(msg)
+            
         except Exception as e:
             print(f"Failed to publish visualization: {e}")
     ######## ros2 viz
@@ -187,7 +194,7 @@ if __name__ == '__main__':
         np.zeros((480, 640, 3), dtype=np.uint8),
         np.zeros((480, 640), dtype=np.float32),
         np.eye(4, dtype=np.float32),
-        "hello",
+        instruction,
         intrinsic=args.camera_intrinsic,
     )
     agent.reset()
