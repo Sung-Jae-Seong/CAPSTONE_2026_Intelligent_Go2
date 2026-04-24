@@ -226,10 +226,11 @@ class InternVLAN1AsyncAgent:
             dual_sys_output.output_action = copy.deepcopy(self.output_action)
             self.output_action = None
         elif self.output_latent is not None:
-            processed_pixel_rgb = np.array(Image.fromarray(self.pixel_goal_rgb).resize((224, 224)), dtype=np.float32) / 255.0
-            processed_pixel_depth = np.array(Image.fromarray(self.pixel_goal_depth).resize((224, 224)), dtype=np.float32)
-            processed_rgb = np.array(Image.fromarray(rgb).resize((224, 224)), dtype=np.float32) / 255.0
-            processed_depth = np.array(Image.fromarray(depth).resize((224, 224)), dtype=np.float32)
+            processed_pixel_rgb = np.array(Image.fromarray(self.pixel_goal_rgb).resize((224, 224))) / 255
+            processed_pixel_depth = np.array(Image.fromarray(self.pixel_goal_depth).resize((224, 224)))
+            processed_rgb = np.array(Image.fromarray(rgb).resize((224, 224))) / 255
+            processed_depth = np.array(Image.fromarray(depth).resize((224, 224)))
+
             rgbs = (
                 torch.stack([torch.from_numpy(processed_pixel_rgb), torch.from_numpy(processed_rgb)])
                 .unsqueeze(0)
@@ -392,13 +393,6 @@ class InternVLAN1AsyncAgent:
             t0 = time.time()
             with torch.inference_mode():
                 traj_latents = self.model.generate_latents(output_ids, pixel_values, image_grid_thw)
-            traj_latents = traj_latents.clone()
-            del outputs
-            del inputs
-            del output_ids
-            del pixel_values
-            del image_grid_thw
-            torch.cuda.empty_cache()
             return None, traj_latents, pixel_goal, None
         else:
             action_seq = self.parse_actions(self.llm_output)
