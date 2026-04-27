@@ -1271,6 +1271,7 @@
     const frameTime = document.getElementById('frame-time');
     const viewerRgb = document.getElementById('viewer-rgb');
     const viewerStage = viewerRgb.parentElement;
+    const trajectoryStage = canvas.parentElement;
     const rgbTopicLabel = document.getElementById('rgb-topic-label');
     const poseCaption = document.getElementById('pose-caption');
     const stdoutCaption = document.getElementById('stdout-caption');
@@ -1301,6 +1302,7 @@
       liveRefreshInFlight: false,
       liveRefreshTimerId: null,
       pointingCursorTimerId: null,
+      trajectoryWaypointTargets: [],
       currentPixelGoal: null,
       currentPlannedTrajectory: null,
       pointingMode: false,
@@ -1361,6 +1363,7 @@
       btnPointing.classList.toggle('active', viewerState.pointingMode);
       btnPointing.textContent = viewerState.pointingMode ? 'Pointing Mode' : 'Pointing';
       viewerStage.classList.toggle('pointing-active', viewerState.pointingMode);
+      trajectoryStage.classList.toggle('pointing-active', viewerState.pointingMode);
 
       const instructionEnabled = viewerState.sourceMode === 'zenoh';
       liveInstructionInput.disabled = !instructionEnabled || liveInstructionSend.dataset.busy === 'true';
@@ -1506,6 +1509,71 @@
       };
     }
 
+    function buildTrajectoryWaypoints(points) {
+      if (!Array.isArray(points) || points.length === 0) {
+        return [];
+      }
+
+      if (points.length === 1) {
+        return [{
+          index: 0,
+          x: points[0].x,
+          y: points[0].y,
+        }];
+      }
+
+      let totalLength = 0;
+      for (let i = 1; i < points.length; i += 1) {
+        totalLength += Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y);
+      }
+
+      const spacing = Math.min(1.25, Math.max(0.35, totalLength / 10));
+      const waypoints = [{
+        index: 0,
+        x: points[0].x,
+        y: points[0].y,
+      }];
+
+      let nextDistance = spacing;
+      let accumulated = 0;
+
+      for (let i = 1; i < points.length; i += 1) {
+        const start = points[i - 1];
+        const end = points[i];
+        const segmentLength = Math.hypot(end.x - start.x, end.y - start.y);
+        if (segmentLength <= 1e-6) {
+          continue;
+        }
+
+        while (accumulated + segmentLength >= nextDistance) {
+          const ratio = (nextDistance - accumulated) / segmentLength;
+          waypoints.push({
+            index: i,
+            x: start.x + (end.x - start.x) * ratio,
+            y: start.y + (end.y - start.y) * ratio,
+          });
+          nextDistance += spacing;
+        }
+
+        accumulated += segmentLength;
+      }
+
+      const lastPoint = points[points.length - 1];
+      const lastWaypoint = waypoints[waypoints.length - 1];
+      if (
+        !lastWaypoint ||
+        Math.hypot(lastWaypoint.x - lastPoint.x, lastWaypoint.y - lastPoint.y) > 1e-6
+      ) {
+        waypoints.push({
+          index: points.length - 1,
+          x: lastPoint.x,
+          y: lastPoint.y,
+        });
+      }
+
+      return waypoints;
+    }
+
     function extractPixelGoal(message) {
       if (typeof message !== 'string' || message.length === 0) {
         return null;
@@ -1629,6 +1697,7 @@
         }
       }
       updateControls();
+      drawTrajectory(canvas.clientWidth || 1, canvas.clientHeight || 1);
     }
 
     function updatePointingCursor(event) {
@@ -1689,6 +1758,39 @@
       setPointingMode(false);
     }
 
+    function handleTrajectoryPointingClick(event) {
+      if (!viewerState.pointingMode) {
+        return;
+      }
+
+      const rect = canvas.getBoundingClientRect();
+      const localX = event.clientX - rect.left;
+      const localY = event.clientY - rect.top;
+      const targets = viewerState.trajectoryWaypointTargets;
+      let bestTarget = null;
+      let bestDistance = Number.POSITIVE_INFINITY;
+
+      for (const target of targets) {
+        const distance = Math.hypot(target.screenX - localX, target.screenY - localY);
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          bestTarget = target;
+        }
+      }
+
+      if (!bestTarget || bestDistance > 14) {
+        setPointingMode(false);
+        return;
+      }
+
+      appendLocalStdout(
+        'stdout',
+        `waypoint x=${bestTarget.x.toFixed(3)}, y=${bestTarget.y.toFixed(3)}`
+      );
+      renderStdout();
+      setPointingMode(false);
+    }
+
     function renderStdout() {
       const mergedEntries = [];
 
@@ -1719,6 +1821,7 @@
 
     function drawTrajectory(width, height) {
       context.clearRect(0, 0, width, height);
+      viewerState.trajectoryWaypointTargets = [];
 
       const points = viewerState.trajectory;
       if (!points.length) {
@@ -1811,6 +1914,29 @@
         context.lineWidth = 3;
         context.stroke();
         context.setLineDash([]);
+      }
+
+      if (viewerState.pointingMode) {
+        const waypointTargets = buildTrajectoryWaypoints(points).map((waypoint) => {
+          const projected = project(waypoint);
+          return {
+            ...waypoint,
+            screenX: projected.x,
+            screenY: projected.y,
+          };
+        });
+
+        viewerState.trajectoryWaypointTargets = waypointTargets;
+
+        for (const waypoint of waypointTargets) {
+          context.beginPath();
+          context.arc(waypoint.screenX, waypoint.screenY, 5, 0, Math.PI * 2);
+          context.fillStyle = '#ffffff';
+          context.fill();
+          context.lineWidth = 2;
+          context.strokeStyle = '#3a84ff';
+          context.stroke();
+        }
       }
 
       if (!currentPose) {
@@ -2137,6 +2263,7 @@
       }
     });
     viewerStage.addEventListener('click', handlePointingClick);
+    trajectoryStage.addEventListener('click', handleTrajectoryPointingClick);
     window.addEventListener('resize', () => {
       renderPixelGoalOverlay();
       resizeCanvas();
