@@ -66,6 +66,14 @@
       padding: 8px 10px;
       margin: 0 auto;
       overflow: hidden;
+      transition: filter 0.18s ease, opacity 0.18s ease;
+    }
+
+    main.pointing-mode .sidebar-stack,
+    main.pointing-mode .toolbar,
+    main.pointing-mode .stdout-shell {
+      opacity: 0.42;
+      filter: blur(2px) saturate(0.82);
     }
 
     .topbar {
@@ -409,6 +417,22 @@
       box-shadow: 0 8px 20px rgba(58, 132, 255, 0.22);
     }
 
+    .button.pointing-button {
+      border-color: rgba(126, 160, 208, 0.42);
+      background: rgba(255, 255, 255, 0.9);
+      cursor: pointer;
+    }
+
+    .button.pointing-button:hover {
+      background: rgba(235, 239, 244, 0.95);
+    }
+
+    .button.pointing-button.active {
+      border-color: #3a84ff;
+      background: rgba(58, 132, 255, 0.12);
+      color: #245fc7;
+    }
+
     .timeline-text {
       color: var(--muted);
       font-size: 12px;
@@ -685,8 +709,27 @@
     }
 
     .goal-marker.hidden,
-    .goal-label.hidden {
+    .goal-label.hidden,
+    .pointing-cursor.hidden {
       display: none;
+    }
+
+    .pointing-cursor {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: var(--danger);
+      box-shadow: 0 0 0 4px rgba(255, 93, 115, 0.18);
+      transform: translate(-50%, -50%);
+      pointer-events: none;
+      z-index: 3;
+    }
+
+    .viewer-stage.pointing-active {
+      cursor: crosshair;
     }
 
     .trajectory-stage {
@@ -976,7 +1019,7 @@
   </style>
 </head>
 <body>
-  <main>
+  <main id="app-root">
     <section class="topbar">
       <div class="topbar-left">
         <h1><span class="headline-accent">go2monitor</span></h1>
@@ -1072,6 +1115,9 @@
             <button class="button primary" id="btn-play" type="button">Play</button>
             <button class="button" id="btn-next" type="button">Next</button>
           </div>
+          <div class="toolbar-left">
+            <button class="button pointing-button" id="btn-pointing" type="button">Pointing</button>
+          </div>
           <div class="toolbar-right">
             <span class="timeline-text" id="frame-label">Loading frames...</span>
             <span class="timeline-text" id="frame-time">viewer unavailable</span>
@@ -1096,6 +1142,7 @@
                     alt="RGB viewer"
                     src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='800' height='600'><rect width='100%' height='100%' fill='%23f8fbff'/><text x='50%' y='50%' dominant-baseline='middle' text-anchor='middle' font-family='Segoe UI, sans-serif' font-size='28' fill='%236d8198'>No image</text></svg>"
                   >
+                  <div class="pointing-cursor hidden" id="pointing-cursor"></div>
                   <div class="viewer-hud">
                     <div class="hud-row">
                       <div class="badge warm" id="viewer-mode-badge">Live Vision</div>
@@ -1218,9 +1265,12 @@
     const btnPrev = document.getElementById('btn-prev');
     const btnPlay = document.getElementById('btn-play');
     const btnNext = document.getElementById('btn-next');
+    const btnPointing = document.getElementById('btn-pointing');
+    const appRoot = document.getElementById('app-root');
     const frameLabel = document.getElementById('frame-label');
     const frameTime = document.getElementById('frame-time');
     const viewerRgb = document.getElementById('viewer-rgb');
+    const viewerStage = viewerRgb.parentElement;
     const rgbTopicLabel = document.getElementById('rgb-topic-label');
     const poseCaption = document.getElementById('pose-caption');
     const stdoutCaption = document.getElementById('stdout-caption');
@@ -1233,6 +1283,7 @@
     const latencyPill = document.getElementById('latency-pill');
     const goalMarker = document.getElementById('goal-marker');
     const goalLabel = document.getElementById('goal-label');
+    const pointingCursor = document.getElementById('pointing-cursor');
 
     const viewerState = {
       frames: [],
@@ -1249,8 +1300,10 @@
       liveRefreshPending: false,
       liveRefreshInFlight: false,
       liveRefreshTimerId: null,
+      pointingCursorTimerId: null,
       currentPixelGoal: null,
       currentPlannedTrajectory: null,
+      pointingMode: false,
       rgbTopic: '/camera/color/image_raw',
       stdoutTopic: 'print',
       lastFrameAtMs: 0,
@@ -1305,6 +1358,9 @@
       btnPlay.disabled = !playbackEnabled;
       btnNext.disabled = !playbackEnabled || atEnd;
       btnPlay.textContent = viewerState.timerId !== null ? 'Stop' : 'Play';
+      btnPointing.classList.toggle('active', viewerState.pointingMode);
+      btnPointing.textContent = viewerState.pointingMode ? 'Pointing Mode' : 'Pointing';
+      viewerStage.classList.toggle('pointing-active', viewerState.pointingMode);
 
       const instructionEnabled = viewerState.sourceMode === 'zenoh';
       liveInstructionInput.disabled = !instructionEnabled || liveInstructionSend.dataset.busy === 'true';
@@ -1413,6 +1469,43 @@
       });
     }
 
+    function getRenderedImageMetrics() {
+      const naturalWidth = viewerRgb.naturalWidth;
+      const naturalHeight = viewerRgb.naturalHeight;
+      const boxWidth = viewerRgb.clientWidth;
+      const boxHeight = viewerRgb.clientHeight;
+
+      if (naturalWidth <= 0 || naturalHeight <= 0 || boxWidth <= 0 || boxHeight <= 0) {
+        return null;
+      }
+
+      const imageAspect = naturalWidth / naturalHeight;
+      const boxAspect = boxWidth / boxHeight;
+      let renderedWidth = 0;
+      let renderedHeight = 0;
+      let offsetX = 0;
+      let offsetY = 0;
+
+      if (imageAspect > boxAspect) {
+        renderedWidth = boxWidth;
+        renderedHeight = boxWidth / imageAspect;
+        offsetY = (boxHeight - renderedHeight) / 2;
+      } else {
+        renderedHeight = boxHeight;
+        renderedWidth = boxHeight * imageAspect;
+        offsetX = (boxWidth - renderedWidth) / 2;
+      }
+
+      return {
+        naturalWidth,
+        naturalHeight,
+        renderedWidth,
+        renderedHeight,
+        offsetX,
+        offsetY,
+      };
+    }
+
     function extractPixelGoal(message) {
       if (typeof message !== 'string' || message.length === 0) {
         return null;
@@ -1501,19 +1594,13 @@
 
     function renderPixelGoalOverlay() {
       const goal = viewerState.currentPixelGoal;
-      const naturalWidth = viewerRgb.naturalWidth;
-      const naturalHeight = viewerRgb.naturalHeight;
-      const boxWidth = viewerRgb.clientWidth;
-      const boxHeight = viewerRgb.clientHeight;
+      const metrics = getRenderedImageMetrics();
 
       if (
         !goal ||
         !Number.isFinite(goal.x) ||
         !Number.isFinite(goal.y) ||
-        naturalWidth <= 0 ||
-        naturalHeight <= 0 ||
-        boxWidth <= 0 ||
-        boxHeight <= 0
+        !metrics
       ) {
         goalMarker.classList.add('hidden');
         goalLabel.classList.add('hidden');
@@ -1521,25 +1608,8 @@
         return;
       }
 
-      const imageAspect = naturalWidth / naturalHeight;
-      const boxAspect = boxWidth / boxHeight;
-      let renderedWidth = 0;
-      let renderedHeight = 0;
-      let offsetX = 0;
-      let offsetY = 0;
-
-      if (imageAspect > boxAspect) {
-        renderedWidth = boxWidth;
-        renderedHeight = boxWidth / imageAspect;
-        offsetY = (boxHeight - renderedHeight) / 2;
-      } else {
-        renderedHeight = boxHeight;
-        renderedWidth = boxHeight * imageAspect;
-        offsetX = (boxWidth - renderedWidth) / 2;
-      }
-
-      const x = offsetX + (goal.x / naturalWidth) * renderedWidth;
-      const y = offsetY + (goal.y / naturalHeight) * renderedHeight;
+      const x = metrics.offsetX + (goal.x / metrics.naturalWidth) * metrics.renderedWidth;
+      const y = metrics.offsetY + (goal.y / metrics.naturalHeight) * metrics.renderedHeight;
 
       goalMarker.style.left = `${x}px`;
       goalMarker.style.top = `${y}px`;
@@ -1548,6 +1618,75 @@
       goalMarker.classList.remove('hidden');
       goalLabel.classList.remove('hidden');
       goalPill.textContent = `goal [${Math.round(goal.x)}, ${Math.round(goal.y)}]`;
+    }
+
+    function setPointingMode(enabled) {
+      viewerState.pointingMode = enabled;
+      appRoot.classList.toggle('pointing-mode', enabled);
+      if (!enabled) {
+        if (viewerState.pointingCursorTimerId === null) {
+          pointingCursor.classList.add('hidden');
+        }
+      }
+      updateControls();
+    }
+
+    function updatePointingCursor(event) {
+      if (!viewerState.pointingMode) {
+        if (viewerState.pointingCursorTimerId === null) {
+          pointingCursor.classList.add('hidden');
+        }
+        return;
+      }
+
+      const rect = viewerStage.getBoundingClientRect();
+      pointingCursor.style.left = `${event.clientX - rect.left}px`;
+      pointingCursor.style.top = `${event.clientY - rect.top}px`;
+      pointingCursor.classList.remove('hidden');
+    }
+
+    function handlePointingClick(event) {
+      if (!viewerState.pointingMode) {
+        return;
+      }
+
+      const metrics = getRenderedImageMetrics();
+      if (!metrics) {
+        setPointingMode(false);
+        return;
+      }
+
+      const rect = viewerStage.getBoundingClientRect();
+      const localX = event.clientX - rect.left;
+      const localY = event.clientY - rect.top;
+      const insideImage =
+        localX >= metrics.offsetX &&
+        localX <= metrics.offsetX + metrics.renderedWidth &&
+        localY >= metrics.offsetY &&
+        localY <= metrics.offsetY + metrics.renderedHeight;
+
+      if (!insideImage) {
+        setPointingMode(false);
+        return;
+      }
+
+      const imageX = Math.round(((localX - metrics.offsetX) / metrics.renderedWidth) * metrics.naturalWidth);
+      const imageY = Math.round(((localY - metrics.offsetY) / metrics.renderedHeight) * metrics.naturalHeight);
+      appendLocalStdout('stdout', `pointing x=${imageX}, y=${imageY}`);
+      renderStdout();
+      if (viewerState.pointingCursorTimerId !== null) {
+        clearTimeout(viewerState.pointingCursorTimerId);
+      }
+      pointingCursor.style.left = `${localX}px`;
+      pointingCursor.style.top = `${localY}px`;
+      pointingCursor.classList.remove('hidden');
+      viewerState.pointingCursorTimerId = window.setTimeout(() => {
+        viewerState.pointingCursorTimerId = null;
+        if (!viewerState.pointingMode) {
+          pointingCursor.classList.add('hidden');
+        }
+      }, 3000);
+      setPointingMode(false);
     }
 
     function renderStdout() {
@@ -1985,8 +2124,19 @@
       renderFrame();
     });
 
+    btnPointing.addEventListener('click', () => {
+      setPointingMode(true);
+    });
+
     liveInstructionSend.dataset.busy = 'false';
     viewerRgb.addEventListener('load', renderPixelGoalOverlay);
+    viewerStage.addEventListener('mousemove', updatePointingCursor);
+    viewerStage.addEventListener('mouseleave', () => {
+      if (viewerState.pointingMode || viewerState.pointingCursorTimerId === null) {
+        pointingCursor.classList.add('hidden');
+      }
+    });
+    viewerStage.addEventListener('click', handlePointingClick);
     window.addEventListener('resize', () => {
       renderPixelGoalOverlay();
       resizeCanvas();
