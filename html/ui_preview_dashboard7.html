@@ -383,6 +383,10 @@
       min-width: 0;
     }
 
+    .toolbar-left[hidden] {
+      display: none !important;
+    }
+
     .toolbar-center {
       display: none;
     }
@@ -1063,7 +1067,7 @@
 
       <section class="content">
         <div class="toolbar">
-          <div class="toolbar-left">
+          <div class="toolbar-left" id="playback-controls" hidden>
             <button class="button" id="btn-prev" type="button">Prev</button>
             <button class="button primary" id="btn-play" type="button">Play</button>
             <button class="button" id="btn-next" type="button">Next</button>
@@ -1086,10 +1090,6 @@
               </div>
 
               <div class="viewer-window">
-                <div class="viewer-toolbar">
-                  <div class="traffic"><span></span><span></span><span></span></div>
-                  <div class="viewer-toolbar-label">rgb viewer</div>
-                </div>
                 <div class="viewer-stage rgb-stage">
                   <img
                     id="viewer-rgb"
@@ -1123,10 +1123,6 @@
                 </div>
 
                 <div class="viewer-window">
-                  <div class="viewer-toolbar">
-                    <div class="traffic"><span></span><span></span><span></span></div>
-                    <div class="viewer-toolbar-label">trajectory map</div>
-                  </div>
                   <div class="trajectory-stage">
                     <canvas id="trajectory-canvas"></canvas>
                     <p class="trajectory-note">planned path overlay + current pose indicator</p>
@@ -1218,6 +1214,7 @@
     const liveInstructionSend = document.getElementById('live-instruction-send');
     const topicsList = document.getElementById('topics-list');
     const topicsMeta = document.getElementById('topics-meta');
+    const playbackControls = document.getElementById('playback-controls');
     const btnPrev = document.getElementById('btn-prev');
     const btnPlay = document.getElementById('btn-play');
     const btnNext = document.getElementById('btn-next');
@@ -1303,6 +1300,7 @@
       const atStart = viewerState.currentIndex <= 0;
       const atEnd = viewerState.currentIndex >= viewerState.timeline.length - 1;
 
+      playbackControls.hidden = !viewerState.supportsPlayback;
       btnPrev.disabled = !playbackEnabled || atStart;
       btnPlay.disabled = !playbackEnabled;
       btnNext.disabled = !playbackEnabled || atEnd;
@@ -1624,16 +1622,21 @@
       }
 
       const padding = 24;
-      const spanX = Math.max(maxX - minX, 1e-6);
-      const spanY = Math.max(maxY - minY, 1e-6);
+      const minTrajectorySpan = 2.0;
+      const centerX = (minX + maxX) / 2;
+      const centerY = (minY + maxY) / 2;
+      const spanX = Math.max(maxX - minX, minTrajectorySpan);
+      const spanY = Math.max(maxY - minY, minTrajectorySpan);
+      const viewMinX = centerX - spanX / 2;
+      const viewMinY = centerY - spanY / 2;
       const scale = Math.min((width - padding * 2) / spanX, (height - padding * 2) / spanY);
       const offsetX = (width - spanX * scale) / 2;
       const offsetY = (height - spanY * scale) / 2;
 
       function project(point) {
         return {
-          x: offsetX + (point.x - minX) * scale,
-          y: height - (offsetY + (point.y - minY) * scale),
+          x: offsetX + (point.x - viewMinX) * scale,
+          y: height - (offsetY + (point.y - viewMinY) * scale),
         };
       }
 

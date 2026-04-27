@@ -13,6 +13,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -449,6 +450,8 @@ WebServer::WebServer(
 }
 
 void WebServer::run(uint16_t port) {
+  app_.loglevel(crow::LogLevel::Warning);
+  std::cout << "go2_monitor listening on http://127.0.0.1:" << port << std::endl;
   app_.port(port).multithreaded().run();
 }
 
