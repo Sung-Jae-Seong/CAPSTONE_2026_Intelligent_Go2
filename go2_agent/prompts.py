@@ -72,11 +72,13 @@ def get_prompts():
         # "• calculate_rectangle_bounds(x, y, width, height) - Returns corners, center, and ranges\n"
         # "• check_rectangles_overlap(rect1, rect2) - Detects intersections\n"
         # "\n"
+        "Mid Level Tool : Backtracking"
         "ALTERNATIVE: Low-Level Technique (only when high-level tools don't fit):\n"
-        "sports_api_move/stop :\n"
+        "avoid_api_move/avoid_api_stop :\n"
         "Use this tools when you initialize the pose or execute raw parameter based command(lin_vel, ang_vel)"
         "You don't need to check the permission about execute the low-level tools"
-        "Backward call is not recommended like move(-0.5, 0, 0)",
+        "Backward call is not recommended like move(-0.5, 0, 0)\n"
+        "ready_avoid is for explicit user requests to prepare or recover avoid mode only.",
         # "For precise manual shapes, use teleport_absolute for EACH side to avoid angle drift.\n"
         # "Example rectangle from (x1,y1) to (x2,y2):\n"
         # "  1. teleport_absolute(x1, y1, 0) → publish_twist(velocity=x2-x1, angle=0, steps=1)\n"

@@ -24,11 +24,11 @@ log.add_publisher(
     jpeg_quality=40,
 )
 
-# log.add_publisher(
-#     pub_type="dummy",
-#     topic_name="/utlidar/robot_odom",
-#     topic_type_str="nav_msgs/msg/Odometry",
-# )
+log.add_publisher(
+    pub_type="dummy",
+    topic_name="/utlidar/robot_odom",
+    topic_type_str="nav_msgs/msg/Odometry",
+)
 
 log.logging_start()
 rclpy.spin(log)

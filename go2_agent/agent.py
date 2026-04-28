@@ -14,6 +14,7 @@
 #  limitations under the License.
 
 import asyncio
+import json
 import os
 import signal
 import sys
@@ -43,7 +44,7 @@ from rosa import ROSA
 from help import get_help
 from llm import get_llm
 from prompts import get_prompts
-from tools import sports_api, InternVLN
+from tools import avoid_api, InternVLN, lidar_slam_tool
 
 instruction = ""
 
@@ -62,6 +63,25 @@ def build_instruction_query(query: str) -> str:
     if not instruction:
         return query
     return f"<ROSA_INSTRUCTIONS>\n{instruction}\n</ROSA_INSTRUCTIONS>\n\n{query}"
+
+
+def parse_query_request(body: str):
+    query = body.strip()
+    stateless = False
+
+    if not query:
+        return query, stateless
+
+    try:
+        payload = json.loads(query)
+    except json.JSONDecodeError:
+        return query, stateless
+
+    if isinstance(payload, dict):
+        query = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        stateless = payload.get("kind") == "pointing_image_goal"
+
+    return query, stateless
 
 class GracefulInterruptHandler:
     """Context manager to handle interrupts gracefully."""
@@ -116,13 +136,17 @@ class ROS2Agent(ROSA):
             ros_version=2,
             llm=self.__llm,
             tools=[ros2_helper_tool],
-            tool_packages=[sports_api, InternVLN],
+            tool_packages=[avoid_api, InternVLN, lidar_slam_tool],
             blacklist=self.__blacklist,
             prompts=self.__prompts,
             verbose=verbose,
             accumulate_chat_history=True,
             streaming=streaming,
         )
+        try:
+            print(avoid_api._ready_avoid(), flush=True)
+        except Exception as exc:
+            print("Avoid API ready failed: %s" % exc, flush=True)
 
         self.examples = [
             "Give me a ROS 2 tutorial for beginners.",
@@ -219,9 +243,20 @@ class ROS2Agent(ROSA):
         else:
             self.print_response(query)
 
-    def ask(self, query: str):
+    def ask(self, query: str, stateless: bool = False):
         with self._request_lock:
-            return self.invoke(build_instruction_query(query))
+            query = build_instruction_query(query)
+
+            if not stateless:
+                return self.invoke(query)
+
+            previous_chat_history = list(self.chat_history)
+            try:
+                self.clear_chat()
+                return self.invoke(query)
+            finally:
+                self.clear_chat()
+                self.chat_history.extend(previous_chat_history)
 
     def print_response(self, query: str):
         """
@@ -395,7 +430,8 @@ class AgentHTTPRequestHandler(BaseHTTPRequestHandler):
             if not body:
                 response, status = "Error: Empty query\n", 400
             else:
-                response = self.agent.ask(body)
+                query, stateless = parse_query_request(body)
+                response = self.agent.ask(query, stateless=stateless)
                 if not response.endswith("\n"):
                     response += "\n"
                 status = 200
