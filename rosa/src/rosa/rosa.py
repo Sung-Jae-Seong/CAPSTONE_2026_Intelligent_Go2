@@ -131,7 +131,7 @@ class ROSA:
         """Clear the chat history."""
         self.__chat_history = []
 
-    def invoke(self, query: str) -> str:
+    def invoke(self, query: str, history_query: Optional[str] = None) -> str:
         """
         Invoke the agent with a user query and return the response.
 
@@ -140,6 +140,7 @@ class ROSA:
 
         Args:
             query (str): The user's input query to be processed by the agent.
+            history_query (Optional[str]): The text to persist in chat history.
 
         Returns:
             str: The agent's response to the query. If an error occurs, it returns an error message.
@@ -155,7 +156,10 @@ class ROSA:
         try:
             with self._token_callback() as cb:
                 result = self.__executor.invoke(
-                    {"input": query, "chat_history": self.__chat_history}
+                    {
+                        "input": self._build_input_messages(query),
+                        "chat_history": self.__chat_history,
+                    }
                 )
                 self._print_usage(cb)
         except KeyboardInterrupt:
@@ -164,10 +168,12 @@ class ROSA:
         except Exception as e:
             return f"An error occurred: {str(e)}"
 
-        self._record_chat_history(query, result["output"])
+        self._record_chat_history(self._resolve_history_query(history_query, query), result["output"])
         return result["output"]
 
-    async def astream(self, query: str) -> AsyncIterable[Dict[str, Any]]:
+    async def astream(
+        self, query: str, history_query: Optional[str] = None
+    ) -> AsyncIterable[Dict[str, Any]]:
         """
         Asynchronously stream the agent's response to a user query.
 
@@ -177,6 +183,7 @@ class ROSA:
 
         Args:
             query (str): The user's input query.
+            history_query (Optional[str]): The text to persist in chat history.
 
         Returns:
             AsyncIterable[Dict[str, Any]]: An asynchronous iterable of dictionaries
@@ -204,7 +211,10 @@ class ROSA:
             final_output = ""
             # Stream events from the agent's response
             async for event in self.__executor.astream_events(
-                input={"input": query, "chat_history": self.__chat_history},
+                input={
+                    "input": self._build_input_messages(query),
+                    "chat_history": self.__chat_history,
+                },
                 config={"run_name": "Agent"},
                 version="v2",
             ):
@@ -246,7 +256,9 @@ class ROSA:
                             yield {"type": "final", "content": chain_output}
 
             if final_output:
-                self._record_chat_history(query, final_output)
+                self._record_chat_history(
+                    self._resolve_history_query(history_query, query), final_output
+                )
         except KeyboardInterrupt:
             # Re-raise KeyboardInterrupt so it can be handled upstream
             yield {"type": "error", "content": "Operation interrupted by user"}
@@ -305,11 +317,31 @@ class ROSA:
             prompts
             + [
                 MessagesPlaceholder(variable_name=self.__memory_key),
-                ("user", "{input}"),
+                MessagesPlaceholder(variable_name="input"),
                 MessagesPlaceholder(variable_name=self.__scratchpad),
             ]
         )
         return template
+
+    def _build_input_messages(self, query):
+        if isinstance(query, str):
+            return [HumanMessage(content=query)]
+        if isinstance(query, HumanMessage):
+            return [query]
+        if isinstance(query, list):
+            return query
+        return [HumanMessage(content=str(query))]
+
+    def _resolve_history_query(self, history_query, query):
+        if history_query is not None:
+            return history_query
+        if isinstance(query, str):
+            return query
+        if isinstance(query, HumanMessage):
+            return query.content
+        if isinstance(query, list) and len(query) == 1 and isinstance(query[0], HumanMessage):
+            return query[0].content
+        return str(query)
 
     @contextmanager
     def _token_callback(self):

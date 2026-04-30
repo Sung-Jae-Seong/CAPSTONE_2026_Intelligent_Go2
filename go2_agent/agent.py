@@ -32,6 +32,7 @@ if os.path.isdir(LOCAL_ROSA_SRC) and LOCAL_ROSA_SRC not in sys.path:
     sys.path.insert(0, LOCAL_ROSA_SRC)
 
 from langchain.agents import tool
+from langchain_core.messages import HumanMessage
 # from langchain_ollama import ChatOllama
 from rich.console import Console
 from rich.console import Group
@@ -47,6 +48,7 @@ from prompts import get_prompts
 from tools import avoid_api, InternVLN, lidar_slam_tool
 
 instruction = ""
+POINTING_IMAGE_GOAL_KIND = "pointing_image_goal"
 
 
 def update_instruction_text(new_instruction: str):
@@ -65,6 +67,51 @@ def build_instruction_query(query: str) -> str:
     return f"<ROSA_INSTRUCTIONS>\n{instruction}\n</ROSA_INSTRUCTIONS>\n\n{query}"
 
 
+def build_pointing_image_url(image: dict):
+    if not isinstance(image, dict):
+        return None
+
+    image_base64 = image.get("base64")
+    if not isinstance(image_base64, str) or not image_base64.strip():
+        return None
+
+    image_base64 = image_base64.strip()
+    if image_base64.startswith("data:image/"):
+        return image_base64
+
+    media_type = image.get("mime_type") or image.get("media_type") or image.get("format") or image.get("type")
+    if not isinstance(media_type, str):
+        media_type = "image/jpeg"
+    else:
+        media_type = media_type.strip().lower()
+        if media_type == "jpg":
+            media_type = "image/jpeg"
+        elif not media_type.startswith("image/"):
+            media_type = "image/%s" % media_type
+    return "data:%s;base64,%s" % (media_type, image_base64)
+
+
+def build_pointing_query_text(payload: dict) -> str:
+    command = payload.get("prompt")
+    if not isinstance(command, str) or not command.strip():
+        command = payload.get("command")
+    command_text = command.strip() if isinstance(command, str) else ""
+
+    text = (
+        "This is a pointing_image_goal request.\n"
+        "Look at the red dot and identify the real-world object it is pointing at.\n"
+        "Treat that object as the navigation target, not the red dot position or image pixel.\n"
+        "Your job is to ground the target as an object that remains the same even if the camera viewpoint changes.\n"
+    )
+    text += (
+       "Rewrite the user's command so that it explicitly targets the identified object.\n"
+       "Then use that rewritten object-grounded command when calling the InternVLN client.\n"
+        f"User command: {command_text}\n"
+    )
+
+    return text
+
+
 def parse_query_request(body: str):
     query = body.strip()
     stateless = False
@@ -77,11 +124,29 @@ def parse_query_request(body: str):
     except json.JSONDecodeError:
         return query, stateless
 
-    if isinstance(payload, dict):
-        query = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-        stateless = payload.get("kind") == "pointing_image_goal"
+    if not isinstance(payload, dict):
+        return query, stateless
 
-    return query, stateless
+    if payload.get("kind") == POINTING_IMAGE_GOAL_KIND:
+        image_url = build_pointing_image_url(payload.get("image"))
+        if image_url:
+            query = [
+                HumanMessage(
+                    content=[
+                        {
+                            "type": "text",
+                            "text": build_instruction_query(build_pointing_query_text(payload)),
+                        },
+                        {"type": "image_url", "image_url": {"url": image_url}},
+                    ]
+                )
+            ]
+        else:
+            query = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        stateless = True
+        return query, stateless
+
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")), stateless
 
 class GracefulInterruptHandler:
     """Context manager to handle interrupts gracefully."""
@@ -245,7 +310,8 @@ class ROS2Agent(ROSA):
 
     def ask(self, query: str, stateless: bool = False):
         with self._request_lock:
-            query = build_instruction_query(query)
+            if isinstance(query, str):
+                query = build_instruction_query(query)
 
             if not stateless:
                 return self.invoke(query)

@@ -14,7 +14,6 @@ import time
 import numpy as np
 import rclpy
 import requests
-from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from PIL import Image as PIL_Image
 from sensor_msgs.msg import Image
@@ -115,7 +114,7 @@ def control_thread():
             if homo_odom is not None and vel is not None and homo_goal is not None:
                 v, w, e_p, e_r = pid.solve(homo_odom, homo_goal, vel)
 
-                print(f"Current Error -> e_p: {abs(e_p):.3f}, e_r: {abs(e_r):.3f}")
+                # print(f"Current Error -> e_p: {abs(e_p):.3f}, e_r: {abs(e_r):.3f}")
 
                 MIN_W = 0.5
                 if abs(e_r) >= 0.05 and abs(w) < MIN_W:
@@ -260,7 +259,7 @@ class Go2Manager(Node):
         self.syncronizer = ApproximateTimeSynchronizer([rgb_down_sub, depth_down_sub], 1, 0.1)
         self.syncronizer.registerCallback(self.rgb_depth_down_callback)
         self.odom_sub = self.create_subscription(Odometry, "/utlidar/robot_odom", self.odom_callback, qos_profile)
-        self.control_pub = self.create_publisher(Request, '/api/sport/request', 5)
+        self.control_pub = self.create_publisher(Request, '/api/obstacles_avoid/request', 5)
         self.toggle_srv = self.create_service(SetBool, '/toggle_run_threads', self.toggle_run_threads_cb)
         self.thread_state_pub = self.create_publisher(Bool, '/thread_state', 10)
         self.thread_state_timer = self.create_timer(0.5, self.publish_thread_state)
@@ -305,6 +304,7 @@ class Go2Manager(Node):
 
     def toggle_run_threads_cb(self, request, response):
         if request.data:
+            self.publish_avoid_ready()
             run_enabled.set()
             response.message = "control/planning threads enabled"
         else:
@@ -424,15 +424,36 @@ class Go2Manager(Node):
                 homo_goal[:3, :3] = np.dot(rotation_matrix, homo_goal[:3, :3])
         self.homo_goal = homo_goal
 
-    def move(self, vx, vy, vyaw):
+    def make_avoid_request(self, api_id, parameter, noreply=True):
         req = Request()
-        req.header.identity.api_id = 1008
-        req.parameter = json.dumps({
-            "x": float(vx),
-            "y": float(vy),
-            "z": float(vyaw),
-        })
-        self.control_pub.publish(req)
+        req.header.identity.id = time.monotonic_ns()
+        req.header.identity.api_id = api_id
+        req.header.lease.id = 0
+        req.header.policy.priority = 0
+        req.header.policy.noreply = noreply
+        req.parameter = json.dumps(parameter, separators=(",", ":"))
+        req.binary = []
+        return req
+
+    def publish_avoid_ready(self):
+        self.control_pub.publish(
+            self.make_avoid_request(1001, {"enable": True}, noreply=False)
+        )
+        self.control_pub.publish(
+            self.make_avoid_request(
+                1004,
+                {"is_remote_commands_from_api": True},
+                noreply=False,
+            )
+        )
+
+    def move(self, vx, vy, vyaw):
+        self.control_pub.publish(
+            self.make_avoid_request(
+                1003,
+                {"x": float(vx), "y": float(vy), "yaw": float(vyaw), "mode": 0},
+            )
+        )
 
 if __name__ == '__main__':
     control_thread_instance = threading.Thread(target=control_thread)

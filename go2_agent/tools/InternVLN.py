@@ -44,7 +44,8 @@ def _toggle_client_thread(enable):
 
 @tool
 def check_client_status() -> str:
-    """Check the InternVLN client thread status from /thread_state."""
+    """Check the InternVLN client thread status from /thread_state.
+    if status is false you can turn on the client thread to execute the high-level tools for vln server."""
     tty_fd, tty_state = _save_terminal_state()
     timed_out = False
     try:
@@ -89,9 +90,10 @@ def _set_command(command):
 @tool
 def client_thread_on(command) -> str:
     """Enable the InternVLN client control/planning threads.
-    It should convey the user's command for vln server.
+    It should process the user's command for vln server.
     you don't need to ask about the permission.
     but, after you execute it, please check the thread state before executing next command"""
+    print(command)
     error = _set_command(command)
     if error:
         return error

@@ -97,6 +97,7 @@ def get_entities(
 def ros2_node_list(pattern: Optional[str] = None, blacklist: Optional[List[str]] = None) -> dict:
     """
     Get a list of ROS2 nodes running on the system.
+    There might not be node list but it is not error.
 
     :param pattern: A regular expression pattern to filter the list of nodes.
     """
