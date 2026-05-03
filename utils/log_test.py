@@ -1,14 +1,17 @@
 from logger import Logger
+import os
 import rclpy
 
 rclpy.init()
+
+UTILS_DIR = os.path.dirname(os.path.abspath(__file__))
 
 log = Logger(
     "/home/unitree/jiwon/InternNav/logs",
     image_encoding="bgr8",
     bridge_only=False,
-    zenoh_config_path="/home/unitree/zenoh_bridge/udp_bridge.json5",
-    zenoh_working_dir="/home/unitree/zenoh_bridge",
+    zenoh_config_path=os.path.join(UTILS_DIR, "tcp_bridge.json5"),
+    zenoh_working_dir=UTILS_DIR,
     auto_start_bridge=True,
 )
 

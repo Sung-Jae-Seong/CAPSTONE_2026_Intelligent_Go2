@@ -304,10 +304,10 @@ class Logger(Node):
                 output_topic = f"{input_topic}/compressed"
 
             if input_qos_profile is None:
-                input_qos_profile = self._default_qos(ReliabilityPolicy.BEST_EFFORT, depth=1)
+                input_qos_profile = self._default_qos(ReliabilityPolicy.RELIABLE, depth=5)
 
             if output_qos_profile is None:
-                output_qos_profile = self._default_qos(ReliabilityPolicy.BEST_EFFORT, depth=1)
+                output_qos_profile = self._default_qos(ReliabilityPolicy.BEST_EFFORT, depth=5)
 
             pub = self.create_publisher(CompressedImage, output_topic, output_qos_profile)
             self.publishers_map[output_topic] = {
@@ -416,7 +416,7 @@ class Logger(Node):
         image = image.resize(( int(480*0.9), int(360*0.9)), PIL_Image.BILINEAR)
 
         buf = io.BytesIO()
-        image.save(buf, format="JPEG", quality=int(jpeg_quality), optimize=True)
+        image.save(buf, format="JPEG", quality=int(jpeg_quality), optimize=False)
         return buf.getvalue(), "jpeg"
 
     def _convert_value(self, value):
