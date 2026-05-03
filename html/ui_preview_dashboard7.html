@@ -692,6 +692,21 @@
       z-index: 2;
     }
 
+    .pointing-preview-marker {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 18px;
+      height: 18px;
+      border-radius: 999px;
+      border: 3px solid white;
+      background: var(--danger);
+      box-shadow: 0 0 0 6px rgba(255, 93, 115, 0.18);
+      transform: translate(-50%, -50%);
+      z-index: 2;
+      pointer-events: none;
+    }
+
     .goal-label {
       position: absolute;
       left: calc(63% + 20px);
@@ -709,6 +724,7 @@
     }
 
     .goal-marker.hidden,
+    .pointing-preview-marker.hidden,
     .goal-label.hidden,
     .pointing-cursor.hidden {
       display: none;
@@ -1154,6 +1170,7 @@
                     </div>
                   </div>
                   <div class="goal-marker hidden" id="goal-marker"></div>
+                  <div class="pointing-preview-marker hidden" id="pointing-preview-marker"></div>
                   <div class="goal-label hidden" id="goal-label">pixel goal</div>
                 </div>
               </div>
@@ -1259,6 +1276,10 @@
     const stdoutBody = document.getElementById('stdout-body');
     const liveInstructionInput = document.getElementById('live-instruction-input');
     const liveInstructionSend = document.getElementById('live-instruction-send');
+    const fallbackViewerImageUrl = '/api/viewer/fallback-image';
+    const pointingPromptText = 'Analyze the object indicated by the red dot in the image and approach that object.';
+    const pointingPreviewMaxSide = 256;
+    const pointingPreviewJpegQuality = 0.55;
     const topicsList = document.getElementById('topics-list');
     const topicsMeta = document.getElementById('topics-meta');
     const playbackControls = document.getElementById('playback-controls');
@@ -1283,6 +1304,7 @@
     const modePill = document.getElementById('mode-pill');
     const latencyPill = document.getElementById('latency-pill');
     const goalMarker = document.getElementById('goal-marker');
+    const pointingPreviewMarker = document.getElementById('pointing-preview-marker');
     const goalLabel = document.getElementById('goal-label');
     const pointingCursor = document.getElementById('pointing-cursor');
 
@@ -1305,11 +1327,14 @@
       trajectoryWaypointTargets: [],
       currentPixelGoal: null,
       currentPlannedTrajectory: null,
+      currentPointingPreview: null,
       pointingMode: false,
       rgbTopic: '/camera/color/image_raw',
+      rgbRevision: 0,
       stdoutTopic: 'print',
       lastFrameAtMs: 0,
       frameRateEstimate: 0,
+      pointingRequestInFlight: false,
     };
 
     function makeTimeLabel(date = new Date()) {
@@ -1470,6 +1495,123 @@
         message,
         timestamp: new Date().toISOString(),
       });
+    }
+
+    function drawRedDot(context2d, x, y, imageWidth, imageHeight) {
+      const radius = Math.max(7, Math.round(Math.min(imageWidth, imageHeight) * 0.018));
+
+      context2d.beginPath();
+      context2d.arc(x, y, radius + 4, 0, Math.PI * 2);
+      context2d.fillStyle = 'rgba(255, 255, 255, 0.96)';
+      context2d.fill();
+
+      context2d.beginPath();
+      context2d.arc(x, y, radius, 0, Math.PI * 2);
+      context2d.fillStyle = '#ff2d2d';
+      context2d.fill();
+    }
+
+    function buildPointingPayload(imageX, imageY) {
+      if (!viewerRgb.naturalWidth || !viewerRgb.naturalHeight) {
+        return null;
+      }
+
+      const naturalWidth = viewerRgb.naturalWidth;
+      const naturalHeight = viewerRgb.naturalHeight;
+      const scale = Math.min(1, pointingPreviewMaxSide / Math.max(naturalWidth, naturalHeight));
+      const exportCanvas = document.createElement('canvas');
+      exportCanvas.width = Math.max(1, Math.round(naturalWidth * scale));
+      exportCanvas.height = Math.max(1, Math.round(naturalHeight * scale));
+
+      const exportContext = exportCanvas.getContext('2d');
+      if (!exportContext) {
+        return null;
+      }
+
+      exportContext.fillStyle = '#ffffff';
+      exportContext.fillRect(0, 0, exportCanvas.width, exportCanvas.height);
+      exportContext.drawImage(viewerRgb, 0, 0, exportCanvas.width, exportCanvas.height);
+      drawRedDot(
+        exportContext,
+        imageX * scale,
+        imageY * scale,
+        exportCanvas.width,
+        exportCanvas.height
+      );
+
+      const dataUrl = exportCanvas.toDataURL('image/jpeg', pointingPreviewJpegQuality);
+      const commaIndex = dataUrl.indexOf(',');
+      if (commaIndex < 0) {
+        return null;
+      }
+
+      const timelineEntry = viewerState.timeline[viewerState.currentIndex];
+      return JSON.stringify({
+        kind: 'pointing_image_goal',
+        prompt: pointingPromptText,
+        point: {
+          x: imageX,
+          y: imageY,
+        },
+        image: {
+          mime_type: 'image/jpeg',
+          width: exportCanvas.width,
+          height: exportCanvas.height,
+          original_width: naturalWidth,
+          original_height: naturalHeight,
+          base64: dataUrl.slice(commaIndex + 1),
+        },
+        meta: {
+          source_mode: viewerState.sourceMode,
+          rgb_topic: viewerState.rgbTopic,
+          viewer_frame_index: timelineEntry ? timelineEntry.viewer_frame_index : null,
+        },
+      });
+    }
+
+    async function submitPointingRequest(imageX, imageY) {
+      if (viewerState.pointingRequestInFlight) {
+        return;
+      }
+
+      const payloadBody = buildPointingPayload(imageX, imageY);
+      if (!payloadBody) {
+        appendLocalStdout('system', 'Failed to build pointing image payload');
+        renderStdout();
+        return;
+      }
+
+      viewerState.pointingRequestInFlight = true;
+      appendLocalStdout('user', `${pointingPromptText} [${imageX}, ${imageY}]`);
+      renderStdout();
+
+      try {
+        const response = await fetch('/api/live/pointing', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json;charset=UTF-8',
+          },
+          body: payloadBody,
+        });
+
+        const payload = await response.json();
+        appendLocalStdout(
+          payload && payload.ok ? 'go2' : 'system',
+          payload && payload.ok
+            ? (typeof payload.response === 'string' && payload.response.length > 0 ? payload.response : '(empty response)')
+            : (payload && typeof payload.error === 'string' && payload.error.length > 0 ? payload.error : 'Failed to send pointing request')
+        );
+      } catch (error) {
+        appendLocalStdout(
+          'system',
+          error && typeof error.message === 'string' && error.message.length > 0
+            ? `Failed to send pointing request: ${error.message}`
+            : 'Failed to send pointing request'
+        );
+      } finally {
+        viewerState.pointingRequestInFlight = false;
+        renderStdout();
+      }
     }
 
     function getRenderedImageMetrics() {
@@ -1688,6 +1830,27 @@
       goalPill.textContent = `goal [${Math.round(goal.x)}, ${Math.round(goal.y)}]`;
     }
 
+    function renderPointingPreviewOverlay() {
+      const preview = viewerState.currentPointingPreview;
+      const metrics = getRenderedImageMetrics();
+
+      if (
+        !preview ||
+        !Number.isFinite(preview.x) ||
+        !Number.isFinite(preview.y) ||
+        !metrics
+      ) {
+        pointingPreviewMarker.classList.add('hidden');
+        return;
+      }
+
+      const x = metrics.offsetX + (preview.x / metrics.naturalWidth) * metrics.renderedWidth;
+      const y = metrics.offsetY + (preview.y / metrics.naturalHeight) * metrics.renderedHeight;
+      pointingPreviewMarker.style.left = `${x}px`;
+      pointingPreviewMarker.style.top = `${y}px`;
+      pointingPreviewMarker.classList.remove('hidden');
+    }
+
     function setPointingMode(enabled) {
       viewerState.pointingMode = enabled;
       appRoot.classList.toggle('pointing-mode', enabled);
@@ -1741,8 +1904,10 @@
 
       const imageX = Math.round(((localX - metrics.offsetX) / metrics.renderedWidth) * metrics.naturalWidth);
       const imageY = Math.round(((localY - metrics.offsetY) / metrics.renderedHeight) * metrics.naturalHeight);
+      viewerState.currentPointingPreview = { x: imageX, y: imageY };
       appendLocalStdout('stdout', `pointing x=${imageX}, y=${imageY}`);
       renderStdout();
+      renderPointingPreviewOverlay();
       if (viewerState.pointingCursorTimerId !== null) {
         clearTimeout(viewerState.pointingCursorTimerId);
       }
@@ -1756,6 +1921,7 @@
         }
       }, 3000);
       setPointingMode(false);
+      submitPointingRequest(imageX, imageY);
     }
 
     function handleTrajectoryPointingClick(event) {
@@ -1981,11 +2147,13 @@
 
     function renderFrame() {
       if (!viewerState.timeline.length) {
+        updateImageSrc(viewerRgb, fallbackViewerImageUrl);
         frameLabel.textContent = viewerState.sourceMode === 'zenoh' ? 'Waiting for live frames' : 'No frames';
         frameTime.textContent = 'viewer unavailable';
         renderStdout();
         updateCurrentFrameAnnotations();
         renderPixelGoalOverlay();
+        renderPointingPreviewOverlay();
         drawTrajectory(canvas.clientWidth || 1, canvas.clientHeight || 1);
         updateStatus();
         updateControls();
@@ -2006,6 +2174,7 @@
 
       updateCurrentFrameAnnotations();
       renderPixelGoalOverlay();
+      renderPointingPreviewOverlay();
       renderStdout();
       resizeCanvas();
       updateStatus();
@@ -2055,15 +2224,25 @@
         }
 
         const previousTimestamp = viewerState.timeline[viewerState.currentIndex]?.timestamp || '';
+        const previousRgbRevision = viewerState.rgbRevision;
         viewerState.supportsPlayback = Boolean(payload.supports_playback);
         viewerState.sourceMode = payload.source_mode || '';
         viewerState.liveRevision = Number(payload.revision) || 0;
+        viewerState.rgbRevision = Number(payload.rgb_revision) || 0;
         viewerState.rgbTopic = payload.rgb_topic || viewerState.rgbTopic;
         viewerState.stdoutTopic = payload.stdout_topic || viewerState.stdoutTopic;
         viewerState.frames = payload.frames || [];
         viewerState.timeline = payload.timeline || [];
         viewerState.trajectory = payload.trajectory || [];
         viewerState.stdoutEntries = payload.stdout_entries || [];
+
+        if (
+          viewerState.currentPointingPreview &&
+          previousRgbRevision > 0 &&
+          viewerState.rgbRevision !== previousRgbRevision
+        ) {
+          viewerState.currentPointingPreview = null;
+        }
 
         if (viewerState.supportsPlayback) {
           viewerState.currentIndex = Math.min(viewerState.currentIndex, Math.max(viewerState.timeline.length - 1, 0));
@@ -2255,7 +2434,10 @@
     });
 
     liveInstructionSend.dataset.busy = 'false';
-    viewerRgb.addEventListener('load', renderPixelGoalOverlay);
+    viewerRgb.addEventListener('load', () => {
+      renderPixelGoalOverlay();
+      renderPointingPreviewOverlay();
+    });
     viewerStage.addEventListener('mousemove', updatePointingCursor);
     viewerStage.addEventListener('mouseleave', () => {
       if (viewerState.pointingMode || viewerState.pointingCursorTimerId === null) {
@@ -2266,6 +2448,7 @@
     trajectoryStage.addEventListener('click', handleTrajectoryPointingClick);
     window.addEventListener('resize', () => {
       renderPixelGoalOverlay();
+      renderPointingPreviewOverlay();
       resizeCanvas();
     });
     liveInstructionSend.addEventListener('click', submitLiveInstruction);

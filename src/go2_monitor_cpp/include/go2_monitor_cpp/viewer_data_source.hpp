@@ -55,6 +55,11 @@ struct ViewerSnapshot {
   std::string depth_topic = "/camera/aligned_depth_to_color/image_raw";
   std::string stdout_topic = "print";
   std::uint64_t revision = 0;
+  std::uint64_t rgb_revision = 0;
+  std::uint64_t depth_revision = 0;
+  bool pointing_preview_active = false;
+  bool awaiting_live_rgb_after_pointing = false;
+  bool rgb_stale_after_pointing = false;
   std::vector<ViewerFrameInfo> frames;
   std::vector<PlaybackTimelineEntry> timeline;
   std::vector<TrajectoryPoint> trajectory;
@@ -72,6 +77,13 @@ public:
     const std::string& stream,
     std::string& mime_type,
     std::string& image_bytes) = 0;
+  virtual bool accept_pointing_preview(
+    const std::string& mime_type,
+    const std::string& image_bytes) {
+    (void)mime_type;
+    (void)image_bytes;
+    return false;
+  }
 
   virtual std::string source_label() const = 0;
   virtual std::string source_mode() const = 0;

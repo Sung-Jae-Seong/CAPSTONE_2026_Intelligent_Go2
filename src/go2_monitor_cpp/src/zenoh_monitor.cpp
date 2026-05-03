@@ -23,18 +23,16 @@
 namespace {
 
 constexpr const char* kRgbTopic = "/camera/color/image_raw/compressed";
-constexpr const char* kDepthTopic = "/camera/aligned_depth_to_color/image_raw";
 constexpr const char* kOdometryTopic = "/utlidar/robot_odom";
 constexpr const char* kStdoutTopic = "print";
 constexpr auto kEndpointRetryDelay = std::chrono::seconds(1);
 constexpr auto kLoopSleep = std::chrono::milliseconds(100);
 constexpr auto kRedeclareInterval = std::chrono::milliseconds(250);
-constexpr const char* kUdpListenEndpoint = "udp/0.0.0.0:0";
+constexpr auto kPointingRgbTimeout = std::chrono::milliseconds(1500);
 
 enum class LiveTopic {
   kUnknown,
   kRgb,
-  kDepth,
   kOdometry,
   kStdout,
 };
@@ -71,9 +69,6 @@ LiveTopic classify_topic(std::string_view keyexpr) {
   if (keyexpr_matches_topic(keyexpr, kRgbTopic)) {
     return LiveTopic::kRgb;
   }
-  if (keyexpr_matches_topic(keyexpr, kDepthTopic)) {
-    return LiveTopic::kDepth;
-  }
   if (keyexpr_matches_topic(keyexpr, kOdometryTopic)) {
     return LiveTopic::kOdometry;
   }
@@ -83,17 +78,27 @@ LiveTopic classify_topic(std::string_view keyexpr) {
   return LiveTopic::kUnknown;
 }
 
+std::string endpoint_protocol(const std::string& endpoint) {
+  const auto separator = endpoint.find('/');
+  if (separator == std::string::npos || separator == 0) {
+    return "udp";
+  }
+  return endpoint.substr(0, separator);
+}
+
 zenoh::Config make_session_config(const std::string& endpoint) {
+  const std::string protocol = endpoint_protocol(endpoint);
+  const std::string listen_endpoint = protocol + "/0.0.0.0:0";
   zenoh::Config config = zenoh::Config::create_default();
   config.insert_json5("mode", R"("peer")");
   config.insert_json5("connect/endpoints", std::string("[\"") + endpoint + "\"]");
   config.insert_json5("connect/timeout_ms", "-1");
   config.insert_json5("connect/exit_on_failure", "false");
   config.insert_json5("connect/retry", "{period_init_ms:200, period_max_ms:200, period_increase_factor:1}");
-  config.insert_json5("listen/endpoints", std::string("[\"") + kUdpListenEndpoint + "\"]");
+  config.insert_json5("listen/endpoints", std::string("[\"") + listen_endpoint + "\"]");
   config.insert_json5("scouting/multicast/enabled", "false");
   config.insert_json5("scouting/gossip/enabled", "false");
-  config.insert_json5("transport/link/protocols", R"(["udp"])");
+  config.insert_json5("transport/link/protocols", std::string("[\"") + protocol + "\"]");
   return config;
 }
 
@@ -128,7 +133,6 @@ std::string make_receive_timestamp() {
 const std::vector<go2_monitor_cpp::TopicInfo>& live_topics() {
   static const std::vector<go2_monitor_cpp::TopicInfo> topics = {
     {kRgbTopic, "sensor_msgs/msg/CompressedImage"},
-    {kDepthTopic, "sensor_msgs/msg/Image"},
     {kOdometryTopic, "nav_msgs/msg/Odometry"},
     {kStdoutTopic, "std_msgs/msg/String"},
   };
@@ -168,19 +172,14 @@ void ZenohMonitor::update_rgb(sensor_msgs::msg::CompressedImage image, std::stri
   latest_rgb_ = std::move(image);
   latest_rgb_timestamp_ = std::move(timestamp);
   has_rgb_ = true;
+  pointing_preview_active_ = false;
+  awaiting_live_rgb_after_pointing_ = false;
+  rgb_stale_after_pointing_ = false;
+  latest_rgb_preview_mime_type_.clear();
+  latest_rgb_preview_bytes_.clear();
   last_error_.clear();
   ++revision_;
   ++rgb_revision_;
-}
-
-void ZenohMonitor::update_depth(sensor_msgs::msg::Image image, std::string timestamp) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  latest_depth_ = std::move(image);
-  latest_depth_timestamp_ = std::move(timestamp);
-  has_depth_ = true;
-  last_error_.clear();
-  ++revision_;
-  ++depth_revision_;
 }
 
 void ZenohMonitor::append_trajectory(TrajectoryPoint point) {
@@ -199,7 +198,7 @@ void ZenohMonitor::append_stdout(StdoutEntry entry) {
 
 bool ZenohMonitor::has_live_data() const {
   std::lock_guard<std::mutex> lock(mutex_);
-  return has_rgb_ || has_depth_ || !trajectory_.empty() || !stdout_entries_.empty();
+  return has_rgb_ || pointing_preview_active_ || !trajectory_.empty() || !stdout_entries_.empty();
 }
 
 void ZenohMonitor::ensure_ros_fallback_started() {
@@ -222,14 +221,6 @@ void ZenohMonitor::ensure_ros_fallback_started() {
     rclcpp::SensorDataQoS(),
     [this](const sensor_msgs::msg::CompressedImage::SharedPtr message) {
       update_rgb(*message, make_receive_timestamp());
-      publish_viewer_update();
-    });
-
-  depth_subscription_ = ros_node_->create_subscription<sensor_msgs::msg::Image>(
-    kDepthTopic,
-    rclcpp::SensorDataQoS(),
-    [this](const sensor_msgs::msg::Image::SharedPtr message) {
-      update_depth(*message, make_receive_timestamp());
       publish_viewer_update();
     });
 
@@ -297,7 +288,6 @@ void ZenohMonitor::stop_ros_fallback() {
     std::lock_guard<std::mutex> lock(mutex_);
     stdout_subscription_.reset();
     odom_subscription_.reset();
-    depth_subscription_.reset();
     rgb_subscription_.reset();
     if (ros_executor_ && ros_node_) {
       ros_executor_->remove_node(ros_node_);
@@ -322,6 +312,15 @@ void ZenohMonitor::publish_viewer_update() {
 
   ws_hub_->broadcast(
     "{\"kind\":\"viewer_update\",\"source\":\"zenoh\",\"revision\":" + std::to_string(revision) + "}");
+}
+
+void ZenohMonitor::update_pointing_contract_state_locked(std::chrono::steady_clock::time_point now) {
+  if (!awaiting_live_rgb_after_pointing_) {
+    rgb_stale_after_pointing_ = false;
+    return;
+  }
+
+  rgb_stale_after_pointing_ = (now - pointing_requested_at_) >= kPointingRgbTimeout;
 }
 
 bool ZenohMonitor::handle_sample(const zenoh::Sample& sample) {
@@ -350,18 +349,6 @@ bool ZenohMonitor::handle_sample(const zenoh::Sample& sample) {
       }
 
       update_rgb(std::move(image), std::move(timestamp));
-      return true;
-    }
-    case LiveTopic::kDepth: {
-      sensor_msgs::msg::Image image;
-      if (!deserialize_ros_message(payload, image, error)) {
-        set_error(
-          "failed to deserialize depth image from " +
-          std::string(sample_keyexpr.data(), sample_keyexpr.size()) + ": " + error);
-        return false;
-      }
-
-      update_depth(std::move(image), std::move(timestamp));
       return true;
     }
     case LiveTopic::kOdometry: {
@@ -435,7 +422,7 @@ void ZenohMonitor::run() {
       );
 
       clear_error();
-      std::cerr << "connected to udp endpoint " << endpoint_ << std::endl;
+      std::cerr << "connected to endpoint " << endpoint_ << std::endl;
       auto next_redeclare = std::chrono::steady_clock::now() + kRedeclareInterval;
 
       while (!stop_requested_.load()) {
@@ -486,31 +473,31 @@ bool ZenohMonitor::get_viewer_snapshot(ViewerSnapshot& snapshot) {
   snapshot.source_mode = "zenoh";
   snapshot.supports_playback = false;
   snapshot.rgb_topic = kRgbTopic;
-  snapshot.depth_topic = kDepthTopic;
+  snapshot.depth_topic.clear();
   snapshot.stdout_topic = kStdoutTopic;
 
   std::lock_guard<std::mutex> lock(mutex_);
+  update_pointing_contract_state_locked(std::chrono::steady_clock::now());
   snapshot.revision = revision_;
+  snapshot.rgb_revision = rgb_revision_;
+  snapshot.pointing_preview_active = pointing_preview_active_;
+  snapshot.awaiting_live_rgb_after_pointing = awaiting_live_rgb_after_pointing_;
+  snapshot.rgb_stale_after_pointing = rgb_stale_after_pointing_;
   snapshot.trajectory = trajectory_;
   snapshot.stdout_entries = stdout_entries_;
 
-  if (has_rgb_ || has_depth_) {
+  if (has_rgb_ || pointing_preview_active_) {
     ViewerFrameInfo frame;
     frame.index = 0;
     frame.rgb_revision = rgb_revision_;
-    frame.depth_revision = depth_revision_;
     snapshot.frames.push_back(std::move(frame));
 
     PlaybackTimelineEntry entry;
     entry.index = 0;
     entry.viewer_frame_index = 0;
 
-    if (!latest_rgb_timestamp_.empty() && !latest_depth_timestamp_.empty()) {
-      entry.timestamp = std::max(latest_rgb_timestamp_, latest_depth_timestamp_);
-    } else if (!latest_rgb_timestamp_.empty()) {
+    if (!latest_rgb_timestamp_.empty()) {
       entry.timestamp = latest_rgb_timestamp_;
-    } else {
-      entry.timestamp = latest_depth_timestamp_;
     }
 
     if (!trajectory_.empty()) {
@@ -545,7 +532,6 @@ bool ZenohMonitor::render_viewer_image(
   }
 
   sensor_msgs::msg::CompressedImage rgb_image;
-  sensor_msgs::msg::Image depth_image;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (stream == "rgb") {
@@ -554,22 +540,14 @@ bool ZenohMonitor::render_viewer_image(
         return false;
       }
       rgb_image = latest_rgb_;
-    } else if (stream == "depth") {
-      if (!has_depth_) {
-        last_error_ = "depth stream is not available yet";
-        return false;
-      }
-      depth_image = latest_depth_;
     } else {
-      last_error_ = "viewer stream must be rgb or depth";
+      last_error_ = "zenoh viewer stream must be rgb";
       return false;
     }
   }
 
   std::string error;
-  const bool ok = stream == "rgb"
-    ? render_compressed_image_message(rgb_image, mime_type, image_bytes, error)
-    : render_image_message(depth_image, stream, mime_type, image_bytes, error);
+  const bool ok = render_compressed_image_message(rgb_image, mime_type, image_bytes, error);
   if (!ok) {
     std::lock_guard<std::mutex> lock(mutex_);
     last_error_ = error;
@@ -580,6 +558,29 @@ bool ZenohMonitor::render_viewer_image(
     std::lock_guard<std::mutex> lock(mutex_);
     last_error_.clear();
   }
+  return true;
+}
+
+bool ZenohMonitor::accept_pointing_preview(
+  const std::string& mime_type,
+  const std::string& image_bytes) {
+  if ((mime_type != "image/jpeg" && mime_type != "image/png") || image_bytes.empty()) {
+    return false;
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    latest_rgb_preview_mime_type_.clear();
+    latest_rgb_preview_bytes_.clear();
+    pointing_preview_active_ = false;
+    awaiting_live_rgb_after_pointing_ = true;
+    rgb_stale_after_pointing_ = false;
+    pointing_requested_at_ = std::chrono::steady_clock::now();
+    last_error_.clear();
+    ++revision_;
+  }
+
+  publish_viewer_update();
   return true;
 }
 

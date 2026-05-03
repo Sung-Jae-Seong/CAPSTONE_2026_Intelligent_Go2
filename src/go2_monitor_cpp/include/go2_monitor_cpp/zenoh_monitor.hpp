@@ -4,9 +4,9 @@
 
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/compressed_image.hpp>
-#include <sensor_msgs/msg/image.hpp>
 
 #include <atomic>
+#include <chrono>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -43,6 +43,9 @@ public:
     const std::string& stream,
     std::string& mime_type,
     std::string& image_bytes) override;
+  bool accept_pointing_preview(
+    const std::string& mime_type,
+    const std::string& image_bytes) override;
   std::string source_label() const override;
   std::string source_mode() const override;
   std::string last_error() const override;
@@ -51,7 +54,6 @@ private:
   void set_error(std::string error);
   void clear_error();
   void update_rgb(sensor_msgs::msg::CompressedImage image, std::string timestamp);
-  void update_depth(sensor_msgs::msg::Image image, std::string timestamp);
   void append_trajectory(TrajectoryPoint point);
   void append_stdout(StdoutEntry entry);
   bool has_live_data() const;
@@ -59,29 +61,31 @@ private:
   void stop_ros_fallback();
   bool handle_sample(const zenoh::Sample& sample);
   void publish_viewer_update();
+  void update_pointing_contract_state_locked(std::chrono::steady_clock::time_point now);
 
   std::shared_ptr<WebSocketHub> ws_hub_;
   std::string endpoint_;
   std::string keyexpr_;
   mutable std::mutex mutex_;
   sensor_msgs::msg::CompressedImage latest_rgb_;
-  sensor_msgs::msg::Image latest_depth_;
   bool has_rgb_ = false;
-  bool has_depth_ = false;
+  bool pointing_preview_active_ = false;
+  bool awaiting_live_rgb_after_pointing_ = false;
+  bool rgb_stale_after_pointing_ = false;
   std::string latest_rgb_timestamp_;
-  std::string latest_depth_timestamp_;
+  std::string latest_rgb_preview_mime_type_;
+  std::string latest_rgb_preview_bytes_;
   std::vector<TrajectoryPoint> trajectory_;
   std::vector<StdoutEntry> stdout_entries_;
   std::string last_error_;
   std::uint64_t revision_ = 0;
   std::uint64_t rgb_revision_ = 0;
-  std::uint64_t depth_revision_ = 0;
+  std::chrono::steady_clock::time_point pointing_requested_at_ {};
   std::atomic_bool stop_requested_ = false;
   bool owns_rclcpp_context_ = false;
   rclcpp::Node::SharedPtr ros_node_;
   std::unique_ptr<rclcpp::executors::SingleThreadedExecutor> ros_executor_;
   rclcpp::SubscriptionBase::SharedPtr rgb_subscription_;
-  rclcpp::SubscriptionBase::SharedPtr depth_subscription_;
   rclcpp::SubscriptionBase::SharedPtr odom_subscription_;
   rclcpp::SubscriptionBase::SharedPtr stdout_subscription_;
   std::thread ros_spin_thread_;

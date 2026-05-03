@@ -9,13 +9,16 @@
 #include <unistd.h>
 
 #include <array>
+#include <cctype>
 #include <cerrno>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <regex>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -24,6 +27,7 @@ namespace {
 constexpr const char* RosaNavHost = "192.168.0.90";
 constexpr int kRemoteInstructionPort = 5000;
 constexpr const char* kRemoteInstructionPath = "/query";
+constexpr const char* kFallbackViewerImageName = "example.png";
 constexpr int kConnectTimeoutMs = 2000;
 constexpr int kRequestIoTimeoutMs = 100000;
 
@@ -33,6 +37,81 @@ struct InstructionRequestResult {
   std::string body;
   std::string error;
 };
+
+bool decode_base64(std::string_view input, std::string& output) {
+  static const std::array<int, 256> table = []() {
+    std::array<int, 256> values {};
+    values.fill(-1);
+    for (int i = 0; i < 26; ++i) {
+      values[static_cast<unsigned char>('A' + i)] = i;
+      values[static_cast<unsigned char>('a' + i)] = 26 + i;
+    }
+    for (int i = 0; i < 10; ++i) {
+      values[static_cast<unsigned char>('0' + i)] = 52 + i;
+    }
+    values[static_cast<unsigned char>('+')] = 62;
+    values[static_cast<unsigned char>('/')] = 63;
+    return values;
+  }();
+
+  output.clear();
+  int value = 0;
+  int bits = -8;
+  for (const unsigned char ch : input) {
+    if (std::isspace(ch)) {
+      continue;
+    }
+    if (ch == '=') {
+      break;
+    }
+
+    const int decoded = table[ch];
+    if (decoded < 0) {
+      return false;
+    }
+
+    value = (value << 6) | decoded;
+    bits += 6;
+    if (bits >= 0) {
+      output.push_back(static_cast<char>((value >> bits) & 0xFF));
+      bits -= 8;
+    }
+  }
+
+  return true;
+}
+
+bool extract_json_string_field(
+  const std::string& payload,
+  const char* field_name,
+  std::string& value) {
+  const std::regex pattern(
+    std::string("\"") + field_name + "\"\\s*:\\s*\"([^\"]*)\"");
+  std::smatch match;
+  if (!std::regex_search(payload, match, pattern) || match.size() < 2) {
+    return false;
+  }
+
+  value = match[1].str();
+  return true;
+}
+
+bool parse_pointing_preview(
+  const std::string& payload,
+  std::string& mime_type,
+  std::string& image_bytes) {
+  std::string base64_bytes;
+  if (!extract_json_string_field(payload, "mime_type", mime_type) ||
+      !extract_json_string_field(payload, "base64", base64_bytes)) {
+    return false;
+  }
+
+  if (!decode_base64(base64_bytes, image_bytes) || image_bytes.empty()) {
+    return false;
+  }
+
+  return true;
+}
 
 struct SocketHandle {
   int fd = -1;
@@ -131,10 +210,11 @@ bool connect_with_timeout(int fd, const sockaddr_in& address, std::string& error
   return true;
 }
 
-InstructionRequestResult post_text_request(
+InstructionRequestResult post_request(
   const char* host,
   int port,
   const char* path,
+  const char* content_type,
   const std::string& body) {
   InstructionRequestResult result;
 
@@ -161,7 +241,7 @@ InstructionRequestResult post_text_request(
   request_stream
     << "POST " << path << " HTTP/1.1\r\n"
     << "Host: " << host << ":" << port << "\r\n"
-    << "Content-Type: application/x-www-form-urlencoded\r\n"
+    << "Content-Type: " << content_type << "\r\n"
     << "Content-Length: " << body.size() << "\r\n"
     << "Connection: close\r\n"
     << "\r\n"
@@ -220,11 +300,21 @@ InstructionRequestResult post_text_request(
 }
 
 InstructionRequestResult forward_instruction_request(const std::string& instruction) {
-  return post_text_request(
+  return post_request(
     RosaNavHost,
     kRemoteInstructionPort,
     kRemoteInstructionPath,
+    "text/plain; charset=utf-8",
     instruction);
+}
+
+InstructionRequestResult forward_pointing_request(const std::string& payload) {
+  return post_request(
+    RosaNavHost,
+    kRemoteInstructionPort,
+    kRemoteInstructionPath,
+    "application/json; charset=utf-8",
+    payload);
 }
 
 crow::json::wvalue make_unavailable_response(const char* error) {
@@ -282,7 +372,9 @@ crow::json::wvalue::list build_frame_list(const go2_monitor_cpp::ViewerSnapshot&
     crow::json::wvalue item;
     item["index"] = static_cast<long long>(frame.index);
     item["rgb_url"] = make_viewer_image_url(frame.index, "rgb", frame, snapshot.source_mode);
-    item["depth_url"] = make_viewer_image_url(frame.index, "depth", frame, snapshot.source_mode);
+    if (!snapshot.depth_topic.empty()) {
+      item["depth_url"] = make_viewer_image_url(frame.index, "depth", frame, snapshot.source_mode);
+    }
     frame_list.emplace_back(std::move(item));
   }
 
@@ -363,6 +455,11 @@ crow::json::wvalue make_viewer_snapshot_response(const go2_monitor_cpp::ViewerSn
   response["source_mode"] = snapshot.source_mode;
   response["supports_playback"] = snapshot.supports_playback;
   response["revision"] = static_cast<unsigned long long>(snapshot.revision);
+  response["rgb_revision"] = static_cast<unsigned long long>(snapshot.rgb_revision);
+  response["depth_revision"] = static_cast<unsigned long long>(snapshot.depth_revision);
+  response["pointing_preview_active"] = snapshot.pointing_preview_active;
+  response["awaiting_live_rgb_after_pointing"] = snapshot.awaiting_live_rgb_after_pointing;
+  response["rgb_stale_after_pointing"] = snapshot.rgb_stale_after_pointing;
   response["rgb_topic"] = snapshot.rgb_topic;
   response["depth_topic"] = snapshot.depth_topic;
   response["stdout_topic"] = snapshot.stdout_topic;
@@ -413,6 +510,49 @@ crow::json::wvalue make_instruction_response(const InstructionRequestResult& res
   if (!result.ok) {
     response["error"] = result.error;
   }
+  return response;
+}
+
+std::filesystem::path find_fallback_viewer_image_path() {
+  namespace fs = std::filesystem;
+
+  const std::array<fs::path, 3> candidate_paths = {
+    fs::current_path() / kFallbackViewerImageName,
+    fs::current_path().parent_path() / kFallbackViewerImageName,
+    fs::path(__FILE__).parent_path().parent_path().parent_path().parent_path() / kFallbackViewerImageName,
+  };
+
+  for (const auto& path : candidate_paths) {
+    if (fs::exists(path) && fs::is_regular_file(path)) {
+      return path;
+    }
+  }
+
+  return {};
+}
+
+crow::response make_fallback_viewer_image_response() {
+  const auto path = find_fallback_viewer_image_path();
+  if (path.empty()) {
+    return crow::response(404, "fallback viewer image was not found");
+  }
+
+  std::ifstream input(path, std::ios::in | std::ios::binary);
+  if (!input) {
+    return crow::response(500, "failed to open fallback viewer image");
+  }
+
+  std::ostringstream buffer;
+  buffer << input.rdbuf();
+  if (!input.good() && !input.eof()) {
+    return crow::response(500, "failed to read fallback viewer image");
+  }
+
+  crow::response response;
+  response.code = 200;
+  response.set_header("Content-Type", "image/png");
+  response.set_header("Cache-Control", "no-store");
+  response.body = buffer.str();
   return response;
 }
 
@@ -500,6 +640,10 @@ void WebServer::setup_routes() {
     return make_viewer_image_response(*viewer_data_source_, req);
   });
 
+  CROW_ROUTE(app_, "/api/viewer/fallback-image")([]() {
+    return make_fallback_viewer_image_response();
+  });
+
   CROW_ROUTE(app_, "/api/live/instruction")
     .methods(crow::HTTPMethod::POST)([this](const crow::request& req) {
       if (!viewer_data_source_ || viewer_data_source_->source_mode() != "zenoh") {
@@ -511,6 +655,25 @@ void WebServer::setup_routes() {
       }
 
       return make_instruction_response(forward_instruction_request(req.body));
+    });
+
+  CROW_ROUTE(app_, "/api/live/pointing")
+    .methods(crow::HTTPMethod::POST)([this](const crow::request& req) {
+      if (!viewer_data_source_ || viewer_data_source_->source_mode() != "zenoh") {
+        return make_unavailable_response("pointing api is available only in zenoh mode");
+      }
+
+      if (req.body.empty()) {
+        return make_unavailable_response("pointing payload is empty");
+      }
+
+      std::string preview_mime_type;
+      std::string preview_image_bytes;
+      if (parse_pointing_preview(req.body, preview_mime_type, preview_image_bytes)) {
+        viewer_data_source_->accept_pointing_preview(preview_mime_type, preview_image_bytes);
+      }
+
+      return make_instruction_response(forward_pointing_request(req.body));
     });
 
   CROW_WEBSOCKET_ROUTE(app_, "/ws")
