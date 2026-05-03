@@ -8,6 +8,7 @@ from collections import deque
 from enum import Enum
 from unitree_api.msg import Request
 import os
+import sys
 import signal
 import subprocess
 import time
@@ -19,6 +20,10 @@ from PIL import Image as PIL_Image
 from sensor_msgs.msg import Image
 import cv2
 
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
 frame_data = {}
 frame_idx = 0
 # user-specific
@@ -28,9 +33,8 @@ from message_filters import ApproximateTimeSynchronizer, Subscriber
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from thread_utils import ReadWriteLock
-
+from utils.deblurganv2_deblurrer import build_deblurrer
 from std_msgs.msg import Bool
-
 from std_srvs.srv import SetBool
 
 run_enabled = threading.Event()
@@ -266,6 +270,7 @@ class Go2Manager(Node):
 
         # class member variable
         self.cv_bridge = CvBridge()
+        self.deblurrer = build_deblurrer()
         self.rgb_image = None
         self.rgb_bytes = None
         self.depth_image = None
@@ -330,19 +335,19 @@ class Go2Manager(Node):
         raw_depth = self.cv_bridge.imgmsg_to_cv2(depth_msg, '16UC1')
 
         ######## Blur filter
-        if ENABLE_BLUR_FILTER:
-            if self.prev_img_pack is None:
-                self.prev_img_pack = (raw_image.copy(), raw_depth.copy())
-            else:
-                gray = cv2.cvtColor(raw_image, cv2.COLOR_RGB2GRAY)
-                laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()                
-                if laplacian_var < self.LAPLACIAN_THRESHOLD:
-                    raw_image, raw_depth = self.prev_img_pack
-                else:
-                    self.prev_img_pack = (raw_image.copy(), raw_depth.copy())
+        # if ENABLE_BLUR_FILTER:
+        #     if self.prev_img_pack is None:
+        #         self.prev_img_pack = (raw_image.copy(), raw_depth.copy())
+        #     else:
+        #         gray = cv2.cvtColor(raw_image, cv2.COLOR_RGB2GRAY)
+        #         laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()                
+        #         if laplacian_var < self.LAPLACIAN_THRESHOLD:
+        #             raw_image, raw_depth = self.prev_img_pack
+        #         else:
+        #             self.prev_img_pack = (raw_image.copy(), raw_depth.copy())
+        self.rgb_image = self.deblurrer.deblur(raw_image)
         ######## Blur filter
 
-        self.rgb_image = raw_image
         image = PIL_Image.fromarray(self.rgb_image)
         image_bytes = io.BytesIO()
         image.save(image_bytes, format='JPEG')
