@@ -3,6 +3,7 @@
 #include "go2_monitor_cpp/message_utils.hpp"
 #include "go2_monitor_cpp/web_server.hpp"
 
+#include <builtin_interfaces/msg/time.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/compressed_image.hpp>
@@ -130,6 +131,36 @@ std::string make_receive_timestamp() {
   return std::string(timestamp_buffer.data(), static_cast<std::size_t>(written));
 }
 
+std::string make_header_timestamp(
+  const builtin_interfaces::msg::Time& stamp,
+  const std::string& fallback) {
+  if (stamp.sec == 0 && stamp.nanosec == 0) {
+    return fallback;
+  }
+
+  const std::time_t seconds = static_cast<std::time_t>(stamp.sec);
+  std::tm tm {};
+  localtime_r(&seconds, &tm);
+
+  std::array<char, 32> time_buffer {};
+  if (std::strftime(time_buffer.data(), time_buffer.size(), "%Y-%m-%dT%H:%M:%S", &tm) == 0) {
+    return fallback;
+  }
+
+  std::array<char, 48> timestamp_buffer {};
+  const int written = std::snprintf(
+    timestamp_buffer.data(),
+    timestamp_buffer.size(),
+    "%s.%09u",
+    time_buffer.data(),
+    stamp.nanosec);
+  if (written <= 0 || static_cast<std::size_t>(written) >= timestamp_buffer.size()) {
+    return fallback;
+  }
+
+  return std::string(timestamp_buffer.data(), static_cast<std::size_t>(written));
+}
+
 const std::vector<go2_monitor_cpp::TopicInfo>& live_topics() {
   static const std::vector<go2_monitor_cpp::TopicInfo> topics = {
     {kRgbTopic, "sensor_msgs/msg/CompressedImage"},
@@ -228,8 +259,9 @@ void ZenohMonitor::ensure_ros_fallback_started() {
     kOdometryTopic,
     rclcpp::SensorDataQoS(),
     [this](const nav_msgs::msg::Odometry::SharedPtr message) {
+      const std::string receive_timestamp = make_receive_timestamp();
       TrajectoryPoint point;
-      point.timestamp = make_receive_timestamp();
+      point.timestamp = make_header_timestamp(message->header.stamp, receive_timestamp);
       point.x = message->pose.pose.position.x;
       point.y = message->pose.pose.position.y;
 
@@ -361,7 +393,7 @@ bool ZenohMonitor::handle_sample(const zenoh::Sample& sample) {
       }
 
       TrajectoryPoint point;
-      point.timestamp = std::move(timestamp);
+      point.timestamp = make_header_timestamp(odom.header.stamp, timestamp);
       point.x = odom.pose.pose.position.x;
       point.y = odom.pose.pose.position.y;
 

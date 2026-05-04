@@ -1661,6 +1661,7 @@
           index: 0,
           x: points[0].x,
           y: points[0].y,
+          timestamp: points[0].timestamp || '',
         }];
       }
 
@@ -1674,6 +1675,7 @@
         index: 0,
         x: points[0].x,
         y: points[0].y,
+        timestamp: points[0].timestamp || '',
       }];
 
       let nextDistance = spacing;
@@ -1693,6 +1695,7 @@
             index: i,
             x: start.x + (end.x - start.x) * ratio,
             y: start.y + (end.y - start.y) * ratio,
+            timestamp: end.timestamp || '',
           });
           nextDistance += spacing;
         }
@@ -1710,6 +1713,7 @@
           index: points.length - 1,
           x: lastPoint.x,
           y: lastPoint.y,
+          timestamp: lastPoint.timestamp || '',
         });
       }
 
@@ -1924,6 +1928,60 @@
       submitPointingRequest(imageX, imageY);
     }
 
+    function buildTrajectoryBacktrackingInstruction(waypoint) {
+      const timestamp = waypoint && typeof waypoint.timestamp === 'string' ? waypoint.timestamp : '';
+      if (!timestamp) {
+        return null;
+      }
+
+      return `Backtrack to the robot trajectory waypoint at timestamp ${timestamp}.`;
+    }
+
+    async function submitTrajectoryBacktrackingRequest(waypoint) {
+      if (viewerState.pointingRequestInFlight) {
+        return;
+      }
+
+      const instruction = buildTrajectoryBacktrackingInstruction(waypoint);
+      if (!instruction) {
+        appendLocalStdout('system', 'Failed to build trajectory backtracking instruction');
+        renderStdout();
+        return;
+      }
+
+      viewerState.pointingRequestInFlight = true;
+      appendLocalStdout('user', instruction);
+      renderStdout();
+
+      try {
+        const response = await fetch('/api/live/instruction', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'text/plain;charset=UTF-8',
+          },
+          body: instruction,
+        });
+
+        const payload = await response.json();
+        appendLocalStdout(
+          payload && payload.ok ? 'go2' : 'system',
+          payload && payload.ok
+            ? (typeof payload.response === 'string' && payload.response.length > 0 ? payload.response : '(empty response)')
+            : (payload && typeof payload.error === 'string' && payload.error.length > 0 ? payload.error : 'Failed to send trajectory backtracking request')
+        );
+      } catch (error) {
+        appendLocalStdout(
+          'system',
+          error && typeof error.message === 'string' && error.message.length > 0
+            ? `Failed to send trajectory backtracking request: ${error.message}`
+            : 'Failed to send trajectory backtracking request'
+        );
+      } finally {
+        viewerState.pointingRequestInFlight = false;
+        renderStdout();
+      }
+    }
+
     function handleTrajectoryPointingClick(event) {
       if (!viewerState.pointingMode) {
         return;
@@ -1951,10 +2009,11 @@
 
       appendLocalStdout(
         'stdout',
-        `waypoint x=${bestTarget.x.toFixed(3)}, y=${bestTarget.y.toFixed(3)}`
+        `waypoint timestamp=${bestTarget.timestamp || 'unavailable'} x=${bestTarget.x.toFixed(3)}, y=${bestTarget.y.toFixed(3)}`
       );
       renderStdout();
       setPointingMode(false);
+      submitTrajectoryBacktrackingRequest(bestTarget);
     }
 
     function renderStdout() {

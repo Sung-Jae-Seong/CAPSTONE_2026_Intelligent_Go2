@@ -143,13 +143,14 @@ Zenoh mode에서 구독하는 ROS topic. Depth topic은 구독하지 않는다.
 | `GET /api/viewer/frames` | frame metadata, revision, pointing 상태 |
 | `GET /api/viewer/image?stream=rgb&index=0&rev=N` | Viewer image. Zenoh mode는 RGB만 제공 |
 | `POST /api/live/instruction` | text instruction을 `192.168.0.90:5000/query`로 forward |
-| `POST /api/live/pointing` | red dot이 합성된 image goal payload를 `192.168.0.90:5000/query`로 forward |
+| `POST /api/live/pointing` | red dot image goal payload를 `192.168.0.90:5000/query`로 forward |
 | `WS /ws` | `viewer_update` 이벤트 |
 
 Pointing 동작:
 
 - UI preview는 이미지 위 DOM overlay로 표시한다.
 - `/api/live/pointing` payload의 이미지는 red dot이 픽셀에 합성된 JPEG다.
+- Pointing mode에서 trajectory waypoint를 클릭하면 해당 odom timestamp가 포함된 자연어 instruction을 `/api/live/instruction`으로 보낸다.
 - pointing 이후 upstream은 RGB frame publish를 계속해야 한다.
 - `/api/viewer/frames`의 `rgb_stale_after_pointing=true`는 pointing 후 새 RGB frame이 들어오지 않았다는 뜻이다.
 
