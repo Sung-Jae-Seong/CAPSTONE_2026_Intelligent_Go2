@@ -3,13 +3,16 @@ import math
 
 from langchain.agents import tool
 
-from .ros2 import execute_ros_command
+from .ros2 import execute_ros_command, ros2_service_list
 
 
 def _trigger_payload(output):
     if "message='" not in output:
         return {"success": False, "error": output}
-    return json.loads(output.split("message='", 1)[1].rsplit("'", 1)[0])
+    try:
+        return json.loads(output.split("message='", 1)[1].rsplit("'", 1)[0])
+    except json.JSONDecodeError:
+        return {"success": False, "error": output}
 
 
 def _sparse_points(points, max_points=8):
@@ -38,8 +41,8 @@ def get_trajectory(seconds: float) -> dict:
     if seconds <= 0.0:
         return {"success": False, "error": "seconds must be positive."}
 
-    _, output = execute_ros_command("ros2 service list")
-    if "/lidar_slam_runner/backtracking" not in output.splitlines():
+    services = ros2_service_list.invoke({"pattern": None, "blacklist": None})["services"]
+    if "/lidar_slam_runner/backtracking" not in services:
         return {
             "success": False,
             "error": "Start utils/lidar_slam_runner.py first.",
@@ -76,6 +79,9 @@ def get_trajectory(seconds: float) -> dict:
         "trajectory_sparse": _sparse_points(trajectory),
         "current_position": current,
         "target_past_position": target,
+        "oldest_selected_stamp": payload.get("oldest_selected_stamp"),
+        "latest_selected_stamp": payload.get("latest_selected_stamp"),
+        "movement_anchor_stamp": payload.get("movement_anchor_stamp"),
         "path_length": length,
         "direct_distance": direct,
         "average_speed": length / duration if duration > 0.0 else None,
@@ -85,7 +91,7 @@ def get_trajectory(seconds: float) -> dict:
 
 
 @tool
-def start_backtracking_drive(seconds: float) -> dict:
+def backtracking_via_second(seconds: float) -> dict:
     """
     Start forward-only backtracking drive to a past odom position.
     seconds : the time that user wants to drive to a past.
@@ -94,22 +100,41 @@ def start_backtracking_drive(seconds: float) -> dict:
     if seconds <= 0.0:
         return {"success": False, "error": "seconds must be positive."}
 
-    _, output = execute_ros_command("ros2 service list")
-    if "/lidar_slam_runner/start_backtracking_drive" not in output.splitlines():
-        return {
-            "success": False,
-            "error": "Start utils/lidar_slam_runner.py first.",
-        }
-
     command = "ros2 param set /lidar_slam_runner backtracking_seconds %s" % seconds
     success, output = execute_ros_command(command)
     if not success:
         return {"success": False, "error": output}
 
-    _, output = execute_ros_command(
-        "ros2 service call /lidar_slam_runner/start_backtracking_drive "
+    success, output = execute_ros_command(
+        "ros2 service call /lidar_slam_runner/backtracking_via_second "
         "std_srvs/srv/Trigger"
     )
+    if not success:
+        return {"success": False, "error": output}
+    return _trigger_payload(output)
+
+
+@tool
+def backtracking_via_timestamp(timestamp: float) -> dict:
+    """
+    Start forward-only backtracking drive to a past odom timestamp.
+    timestamp : absolute /utlidar/robot_odom stamp in seconds.
+    """
+    timestamp = float(timestamp)
+    if timestamp < 0.0:
+        return {"success": False, "error": "timestamp must be non-negative."}
+
+    command = "ros2 param set /lidar_slam_runner backtracking_timestamp %s" % timestamp
+    success, output = execute_ros_command(command)
+    if not success:
+        return {"success": False, "error": output}
+
+    success, output = execute_ros_command(
+        "ros2 service call /lidar_slam_runner/backtracking_via_timestamp "
+        "std_srvs/srv/Trigger"
+    )
+    if not success:
+        return {"success": False, "error": output}
     return _trigger_payload(output)
 
 
@@ -118,8 +143,8 @@ def stop_backtracking_drive() -> dict:
     """
     Stop the active backtracking drive.
     """
-    _, output = execute_ros_command("ros2 service list")
-    if "/lidar_slam_runner/stop_backtracking_drive" not in output.splitlines():
+    services = ros2_service_list.invoke({"pattern": None, "blacklist": None})["services"]
+    if "/lidar_slam_runner/stop_backtracking_drive" not in services:
         return {
             "success": False,
             "error": "Start utils/lidar_slam_runner.py first.",
