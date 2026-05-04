@@ -16,6 +16,7 @@
 import asyncio
 import json
 import os
+import re
 import signal
 import sys
 import threading
@@ -49,6 +50,7 @@ from tools import avoid_api, InternVLN, lidar_slam_tool
 
 instruction = ""
 POINTING_IMAGE_GOAL_KIND = "pointing_image_goal"
+TEXT_PAYLOAD_KEYS = ("prompt", "query", "command", "text", "instruction")
 
 
 def update_instruction_text(new_instruction: str):
@@ -65,6 +67,25 @@ def build_instruction_query(query: str) -> str:
     if not instruction:
         return query
     return f"<ROSA_INSTRUCTIONS>\n{instruction}\n</ROSA_INSTRUCTIONS>\n\n{query}"
+
+
+def normalize_text_query(query: str) -> str:
+    if not isinstance(query, str):
+        return ""
+
+    normalized = query.strip()
+    if len(normalized) >= 2 and normalized[0] == normalized[-1] and normalized[0] in {"'", '"'}:
+        normalized = normalized[1:-1].strip()
+    normalized = re.sub(r"\s+", " ", normalized)
+    return normalized
+
+
+def extract_text_query_from_payload(payload: dict):
+    for key in TEXT_PAYLOAD_KEYS:
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return normalize_text_query(value)
+    return None
 
 
 def build_pointing_image_url(image: dict):
@@ -113,7 +134,7 @@ def build_pointing_query_text(payload: dict) -> str:
 
 
 def parse_query_request(body: str):
-    query = body.strip()
+    query = normalize_text_query(body)
     stateless = False
 
     if not query:
@@ -123,6 +144,9 @@ def parse_query_request(body: str):
         payload = json.loads(query)
     except json.JSONDecodeError:
         return query, stateless
+
+    if isinstance(payload, str):
+        return normalize_text_query(payload), stateless
 
     if not isinstance(payload, dict):
         return query, stateless
@@ -146,7 +170,18 @@ def parse_query_request(body: str):
         stateless = True
         return query, stateless
 
+    text_query = extract_text_query_from_payload(payload)
+    if text_query:
+        return text_query, stateless
+
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":")), stateless
+
+
+def prepare_agent_query(query: str):
+    normalized = normalize_text_query(query)
+    if not normalized:
+        return normalized
+    return build_instruction_query(normalized)
 
 class GracefulInterruptHandler:
     """Context manager to handle interrupts gracefully."""
@@ -311,7 +346,7 @@ class ROS2Agent(ROSA):
     def ask(self, query: str, stateless: bool = False):
         with self._request_lock:
             if isinstance(query, str):
-                query = build_instruction_query(query)
+                query = prepare_agent_query(query)
 
             if not stateless:
                 return self.invoke(query)
@@ -340,7 +375,7 @@ class ROS2Agent(ROSA):
         try:
             with GracefulInterruptHandler():
                 with self._request_lock:
-                    response = self.invoke(build_instruction_query(query))
+                    response = self.invoke(prepare_agent_query(query) if isinstance(query, str) else query)
                 with Live(
                     console=console, auto_refresh=True, vertical_overflow="visible"
                 ) as live:
@@ -378,7 +413,7 @@ class ROS2Agent(ROSA):
             with GracefulInterruptHandler() as handler:
                 with self._request_lock:
                     with Live(panel, console=console, auto_refresh=False) as live:
-                        async for event in self.astream(build_instruction_query(query)):
+                        async for event in self.astream(prepare_agent_query(query) if isinstance(query, str) else query):
                             if handler.interrupted:
                                 break
 
