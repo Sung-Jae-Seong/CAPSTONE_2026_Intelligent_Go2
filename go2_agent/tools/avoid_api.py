@@ -1,27 +1,35 @@
 import json
-import shlex
+import os
 import subprocess
+import sys
+import textwrap
 import time as time_module
 
 from langchain.agents import tool
 
-from .ros2 import execute_ros_command
+
+REQUEST_TOPIC = "/api/obstacles_avoid/request"
+ROS_PYTHON = os.getenv("ROS_PYTHON", "/usr/bin/python3.8")
+ROS_SETUP_BASH = os.getenv(
+    "ROS_SETUP_BASH",
+    "/home/unitree/unitree_msg_ws/install/setup.bash",
+)
+WORKER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "avoid_api_worker.py")
+MATCH_TIMEOUT_SECONDS = 3.0
+PUBLISH_RATE_HZ = 10.0
+ONCE_PUBLISH_SECONDS = 0.3
+
+_worker_process = None
 
 
 def request_message(api_id, parameter=None, noreply=True):
     if parameter is None:
         parameter = {}
-    parameter = json.dumps(parameter, separators=(",", ":"))
-    return (
-        "{header: {identity: {id: %d, api_id: %d}, lease: {id: 0}, "
-        "policy: {priority: 0, noreply: %s}}, "
-        "parameter: '%s', binary: []}"
-    ) % (
-        time_module.monotonic_ns(),
-        api_id,
-        "true" if noreply else "false",
-        parameter,
-    )
+    return {
+        "api_id": int(api_id),
+        "parameter": parameter,
+        "noreply": bool(noreply),
+    }
 
 
 def avoid_move_message(x=0.0, y=0.0, yaw=0.0):
@@ -36,10 +44,6 @@ def avoid_switch_message(enable):
     return request_message(1001, {"enable": bool(enable)}, noreply=False)
 
 
-def avoid_switch_get_message():
-    return request_message(1002, {}, noreply=False)
-
-
 def avoid_remote_api_message(enable):
     return request_message(
         1004,
@@ -48,80 +52,91 @@ def avoid_remote_api_message(enable):
     )
 
 
-def topic_pub_command(extra_args, message):
-    return "ros2 topic pub %s /api/obstacles_avoid/request unitree_api/msg/Request %s" % (
-        extra_args,
-        shlex.quote(message),
+def _start_worker():
+    global _worker_process
+
+    if _worker_process is not None and _worker_process.poll() is None:
+        return _worker_process
+
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    _worker_process = subprocess.Popen(
+        [
+            "/bin/bash",
+            "-lc",
+            f"source {ROS_SETUP_BASH} && exec {ROS_PYTHON} {WORKER_PATH}",
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+        env=env,
     )
+    return _worker_process
+
+
+def _worker_request(payload):
+    process = _start_worker()
+
+    if process.stdin is None or process.stdout is None:
+        return False, "Avoid worker pipes are unavailable."
+
+    try:
+        process.stdin.write(json.dumps(payload, separators=(",", ":")) + "\n")
+        process.stdin.flush()
+    except Exception as exc:
+        return False, str(exc)
+
+    line = process.stdout.readline()
+    if not line:
+        stderr_output = ""
+        if process.stderr is not None:
+            stderr_output = process.stderr.read().strip()
+        return False, stderr_output or "Avoid worker returned no response."
+
+    try:
+        response = json.loads(line)
+    except json.JSONDecodeError:
+        return False, line.strip()
+
+    if response.get("ok"):
+        return True, response
+    return False, response.get("error", "Unknown avoid worker error.")
+
+
+def _publish_message(message, duration_seconds):
+    success, response = _worker_request(
+        {
+            "cmd": "publish",
+            "message": message,
+            "duration_seconds": float(duration_seconds),
+            "rate_hz": PUBLISH_RATE_HZ,
+            "match_timeout_seconds": MATCH_TIMEOUT_SECONDS,
+            "topic_name": REQUEST_TOPIC,
+        }
+    )
+    if success:
+        return ""
+    return response
 
 
 def ros2_publish_once(message):
-    success, output = execute_ros_command(topic_pub_command("--once", message))
-    return "" if success else output
+    return _publish_message(message, ONCE_PUBLISH_SECONDS)
 
 
 def ros2_publish_for(message, seconds):
-    process = subprocess.Popen(
-        shlex.split(topic_pub_command("-r 10", message)),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    try:
-        time_module.sleep(seconds)
-    finally:
-        if process.poll() is None:
-            process.terminate()
-    stdout, stderr = process.communicate(timeout=1)
-    if process.returncode not in (0, -15):
-        return stderr.strip() or stdout.strip() or "Command failed."
-    return ""
-
-
-def read_avoid_response(message):
-    echo = subprocess.Popen(
-        [
-            "ros2",
-            "topic",
-            "echo",
-            "--qos-reliability",
-            "best_effort",
-            "/api/obstacles_avoid/response",
-            "unitree_api/msg/Response",
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    time_module.sleep(0.1)
-    ros2_publish_once(message)
-    try:
-        stdout, _stderr = echo.communicate(timeout=1)
-    except subprocess.TimeoutExpired:
-        echo.terminate()
-        stdout, _stderr = echo.communicate(timeout=1)
-    return stdout
-
-
-def avoid_switch_enabled():
-    output = read_avoid_response(avoid_switch_get_message())
-    if '"enable":true' in output or '\\"enable\\":true' in output:
-        return True
-    if '"enable":false' in output or '\\"enable\\":false' in output:
-        return False
-    return None
+    return _publish_message(message, float(seconds))
 
 
 def _ready_avoid():
-    enabled = avoid_switch_enabled()
-    if enabled is not True:
-        error = ros2_publish_once(avoid_switch_message(True))
-        if error:
-            return error
+    error = ros2_publish_once(avoid_switch_message(True))
+    if error:
+        return error
     error = ros2_publish_once(avoid_remote_api_message(True))
     if error:
         return error
-    return "Avoid API is ready. switch=%s remote_command=True" % enabled
+    return "Avoid API is ready. switch=True remote_command=True"
 
 
 @tool

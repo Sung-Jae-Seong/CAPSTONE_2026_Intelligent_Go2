@@ -27,6 +27,16 @@ except ImportError:
         return os.getenv("ROS_LOG_DIR", os.path.join(os.path.expanduser("~"), ".ros", "log"))
 
 
+ROS_SETUP_BASH = os.getenv(
+    "ROS_SETUP_BASH",
+    "/home/unitree/unitree_msg_ws/install/setup.bash",
+)
+
+
+def _wrap_ros_command(command: str) -> str:
+    return f"source {ROS_SETUP_BASH} && {command}"
+
+
 def execute_ros_command(command: str) -> Tuple[bool, str]:
     """
     Execute a ROS2 command.
@@ -47,10 +57,40 @@ def execute_ros_command(command: str) -> Tuple[bool, str]:
         raise ValueError(f"'ros2 {cmd[1]}' is not a valid ros2 subcommand.")
 
     try:
-        output = subprocess.check_output(command, shell=True).decode()
+        output = subprocess.check_output(
+            _wrap_ros_command(command),
+            shell=True,
+            executable="/bin/bash",
+        ).decode()
         return True, output
     except Exception as e:
         return False, str(e)
+
+
+def execute_ros_topic_echo(topic: str, timeout_seconds: float) -> Tuple[bool, str]:
+    timeout_seconds = max(float(timeout_seconds), 1.0)
+    try:
+        result = subprocess.run(
+            [
+                "/bin/bash",
+                "-lc",
+                _wrap_ros_command(
+                    f"timeout {timeout_seconds} ros2 topic echo {topic}"
+                ),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except Exception as e:
+        return False, str(e)
+
+    output = "\n".join(part for part in (result.stdout, result.stderr) if part).strip()
+    if result.returncode not in (0, 124):
+        return False, output or f"ros2 topic echo failed with exit code {result.returncode}"
+    if not output:
+        return False, "No topic output received."
+    return True, output
 
 
 def get_entities(
@@ -138,14 +178,12 @@ def ros2_topic_echo(
     :note: Do not set return_echoes to True if the number of messages is large.
            This will cause the response to be too large and may cause the tool to fail.
     """
-    cmd = f"ros2 topic echo {topic} --once --spin-time {timeout}"
-
     if count < 1 or count > 10:
         return {"error": "Count must be between 1 and 10."}
 
     echoes = []
     for i in range(count):
-        success, output = execute_ros_command(cmd)
+        success, output = execute_ros_topic_echo(topic, timeout)
 
         if not success:
             return {"error": output}
