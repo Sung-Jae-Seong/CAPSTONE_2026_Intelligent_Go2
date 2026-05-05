@@ -106,8 +106,12 @@ class InternVLAN1AsyncAgent:
             model_path=OBJECT_EXTRACTION_MODEL_PATH,
             tokenizer_path=LOVON_TOKENIZER_PATH,
         )
-		# confidence score의 threshold 초기화 (default=0.5)
-        self.yolo_conf_threshold = getattr(args, 'yolo_conf_threshold', 0.3)
+        # confidence score의 threshold 초기화 (default=0.5)
+        self.yolo_conf_threshold = getattr(args, 'yolo_conf_threshold', 0.5)
+        # 최근 3개 same-target YOLO 결과만 짧게 유지하고, 현재 프레임이 미검출이면 최근 valid detection들의 평균값으로 한 번 fallback 하도록 넣었습니다.
+        self.yolo_history_size = 3
+        self.yolo_history_target = None
+        self.yolo_history = []
 
     def reset(self):
         self.rgb_list = []
@@ -127,6 +131,8 @@ class InternVLAN1AsyncAgent:
         self.save_dir = "test_data/" + datetime.now().strftime("%Y%m%d_%H%M%S")
         os.makedirs(self.save_dir, exist_ok=True)
         self.input_images = []
+        self.yolo_history_target = None
+        self.yolo_history = []
         torch.cuda.empty_cache()
 
     def parse_actions(self, output):
@@ -256,6 +262,7 @@ class InternVLAN1AsyncAgent:
             image.save(f"{self.save_dir}/debug_raw_{self.episode_idx: 04d}.jpg")
         else:
             image.save(f"{self.save_dir}/debug_raw_{self.episode_idx: 04d}_look_down.jpg")
+            image = image.resize((self.resize_w, self.resize_h))
         if not look_down:
             self.conversation_history = []
             self.past_key_values = None
@@ -306,10 +313,27 @@ class InternVLAN1AsyncAgent:
         inputs = self.processor(text=[text], images=self.input_images, return_tensors="pt").to(self.device)
 
         # ---- YOLO detection (LLM generate 전에 실행) ----
-        target_object = self.object_extractor.predict(instruction)
+        target_object = self.object_extractor.predict(instruction) # TODO: instruction 바뀔 때만 새로 호출하도록 최적화
         rgb_bgr = rgb[:, :, ::-1]  # RGB → BGR (YOLO expects BGR)
         yolo_results = self.yolo_model(rgb_bgr, verbose=False)
         yolo_detection = self._find_target_bbox(yolo_results, target_object)
+        if target_object != self.yolo_history_target:
+            self.yolo_history_target = target_object
+            self.yolo_history = []
+        self.yolo_history.append(yolo_detection)
+        if len(self.yolo_history) > self.yolo_history_size:
+            self.yolo_history.pop(0)
+        if yolo_detection is None:
+            recent_detections = [det for det in self.yolo_history if det is not None]
+            if recent_detections:
+                avg_cx = sum(det[0] for det in recent_detections) / len(recent_detections)
+                avg_cy = sum(det[1] for det in recent_detections) / len(recent_detections)
+                avg_conf = sum(det[2] for det in recent_detections) / len(recent_detections)
+                avg_bbox = [
+                    int(sum(det[3][i] for det in recent_detections) / len(recent_detections))
+                    for i in range(4)
+                ]
+                yolo_detection = (avg_cx, avg_cy, avg_conf, tuple(avg_bbox))
         yolo_center = (yolo_detection[0], yolo_detection[1]) if yolo_detection else None
         yolo_conf = yolo_detection[2] if yolo_detection else None
         yolo_bbox = yolo_detection[3] if yolo_detection else None
@@ -352,6 +376,9 @@ class InternVLAN1AsyncAgent:
                 'coord': yolo_coord_str,
                 'bbox': yolo_bbox,
             }
+            self.llm_output = yolo_coord_str
+            with open(f"{self.save_dir}/llm_output_{self.episode_idx: 04d}.txt", 'w') as f:
+                f.write(self.llm_output)
             yolo_tokens = self.processor.tokenizer.encode(
                 yolo_coord_str, add_special_tokens=False
             )
