@@ -27,62 +27,115 @@ bridge = CvBridge()
 idx = 0
 start_time = time.time()
 output_dir = ''
-zero_action_count = 0
-last_classified_instruction = None
 instruction_classifier = None
-instruction_intent_embeddings = {}
 
-######## logging server
-# import go2_monitor
-# SOURCE = "zenoh"
-# PORT = 8080
-# ENDPOINT = "udp/192.168.0.151:7447"
-# option = go2_monitor.monitor_option()
-# option.source = SOURCE
-# option.port = PORT
-# option.endpoint = ENDPOINT
-# go2_monitor.start_monitor(option)
-########
+# warning off
+import warnings
+
+warnings.filterwarnings(
+    "ignore",
+    message=r".*copying from a non-meta parameter in the checkpoint to a meta parameter.*",
+    category=UserWarning,
+)
 
 
 ######## instruction update
 instruction = "move to the door"
 
-def load_intent_embeddings(classifier):
-    intent_embedding_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'instruction_embeddings.npz')
-    if os.path.exists(intent_embedding_path):
-        with np.load(intent_embedding_path) as intent_embeddings:
-            return {
-                'navigation': intent_embeddings['navigation'],
-                'following': intent_embeddings['following'],
-            }
+class ActionProcessor:
+    def __init__(self):
+        self.zero_action_count = 0
+        self.last_instruction = None
+        self.turn_action_history = []
+        self.locked_turn_action = None
 
-    embeddings = {
-        'navigation': classifier.encode(
-            ['navigation', 'approach to', 'move to', 'go to', '접근', '이동하다'],
-            normalize_embeddings=True,
-        ),
-        'following': classifier.encode(
-            ['follow', 'tracking', '따라가다'],
-            normalize_embeddings=True,
-        ),
-    }
-    np.savez(
-        intent_embedding_path,
-        navigation=embeddings['navigation'],
-        following=embeddings['following'],
-    )
-    return embeddings
+    def reset(self):
+        self.zero_action_count = 0
+        self.last_instruction = None
+        self.turn_action_history = []
+        self.locked_turn_action = None
+
+    def reset_if_instruction_changed(self, current_instruction):
+        if current_instruction != self.last_instruction:
+            self.reset()
+            self.last_instruction = current_instruction
+
+    def process_stop_action(self, output_action, instruction_intent):
+        if output_action == [0]:
+            self.zero_action_count += 1
+        else:
+            self.zero_action_count = 0
+
+        if self.zero_action_count < 3:
+            return output_action, False
+
+        self.zero_action_count = 0
+        if instruction_intent == 'navigation':
+            return [-1], False
+        return output_action, True
+
+    def process_turn_action(self, output_action):
+        if output_action == [5]:
+            if self.locked_turn_action is None:
+                self.locked_turn_action = 2
+            self.turn_action_history = []
+            self.zero_action_count = 0
+            return [self.locked_turn_action], True
+
+        if output_action not in ([2], [3]):
+            self.turn_action_history = []
+            return output_action, False
+
+        if self.locked_turn_action is not None:
+            self.turn_action_history = []
+            return [self.locked_turn_action], False
+
+        self.turn_action_history = (self.turn_action_history + [output_action[0]])[-3:]
+        if self.turn_action_history in ([2, 3, 2], [3, 2, 3]):
+            self.locked_turn_action = self.turn_action_history[1]
+            self.turn_action_history = []
+            return [self.locked_turn_action], False
+
+        return output_action, False
+
+action_processor = ActionProcessor()
+
+class InstructionClassifier:
+    def __init__(self):
+        self.model = SentenceTransformer("nlpai-lab/KURE-v1", device="cuda:1")
+        self.intent_embeddings = self.load_intent_embeddings()
+
+    def load_intent_embeddings(self):
+        intent_embedding_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'instruction_embeddings.npz')
+        if os.path.exists(intent_embedding_path):
+            with np.load(intent_embedding_path) as intent_embeddings:
+                return {'navigation': intent_embeddings['navigation'], 'following': intent_embeddings['following']}
+
+        embeddings = {
+            'navigation': self.model.encode(
+                ['navigation', 'approach to', 'move to', 'go to', 'find', '접근', '이동하다', '찾다'],
+                normalize_embeddings=True,
+            ),
+            'following': self.model.encode(['follow', 'tracking', '따라가다'], normalize_embeddings=True),
+        }
+        np.savez(intent_embedding_path, **embeddings)
+        return embeddings
+
+    def classify(self, user_instruction):
+        embedding = self.model.encode(user_instruction, normalize_embeddings=True)
+        navigation_score = float(np.max(self.intent_embeddings['navigation'] @ embedding))
+        following_score = float(np.max(self.intent_embeddings['following'] @ embedding))
+        intent = 'navigation' if navigation_score >= following_score else 'following'
+        return intent, navigation_score, following_score
 
 @app.route("/update_instruction", methods=["POST"])
 def update_instruction():
-    global instruction, zero_action_count, last_classified_instruction
+    global instruction
 
     new_instruction = request.get_data(as_text=True)
     if new_instruction and len(new_instruction) > 0:
         instruction = new_instruction.strip()
-        zero_action_count = 0
-        last_classified_instruction = None
+        action_processor.reset()
         return f"Successfully updated to: {new_instruction}\n", 200
     else:
         return "Error: Empty instruction\n", 400
@@ -90,7 +143,7 @@ def update_instruction():
 
 @app.route("/eval_dual", methods=['POST'])
 def eval_dual():
-    global idx, output_dir, start_time, zero_action_count, last_classified_instruction
+    global idx, output_dir, start_time
     start_time = time.time()
 
     image_file = request.files['image']
@@ -112,14 +165,9 @@ def eval_dual():
     ######## instruction update
     print('[Current Instruction]', instruction, '...')
     ######## instruction update
-    if instruction != last_classified_instruction:
-        zero_action_count = 0
-        last_classified_instruction = instruction
+    action_processor.reset_if_instruction_changed(instruction)
 
-    instruction_embedding = instruction_classifier.encode(instruction, normalize_embeddings=True)
-    navigation_score = float(np.max(instruction_intent_embeddings['navigation'] @ instruction_embedding))
-    following_score = float(np.max(instruction_intent_embeddings['following'] @ instruction_embedding))
-    instruction_intent = 'navigation' if navigation_score >= following_score else 'following'
+    instruction_intent, navigation_score, following_score = instruction_classifier.classify(instruction)
     print(
         f"[Instruction Intent] {instruction_intent} "
         f"navigation={navigation_score:.4f} following={following_score:.4f}"
@@ -129,7 +177,7 @@ def eval_dual():
     if policy_init:
         start_time = time.time()
         idx = 0
-        zero_action_count = 0
+        action_processor.reset()
         output_dir = 'output/runs' + datetime.now().strftime('%m-%d-%H%M')
         os.makedirs(output_dir, exist_ok=True)
         print("init reset model!!!")
@@ -144,29 +192,20 @@ def eval_dual():
     dual_sys_output, yolo_output = agent.step(
         image, depth, camera_pose, instruction, intrinsic=args.camera_intrinsic, look_down=look_down
     )
-    if dual_sys_output.output_action is not None and dual_sys_output.output_action == [5]:
-        look_down = True
-        dual_sys_output, yolo_output = agent.step(
-            image, depth, camera_pose, instruction, intrinsic=args.camera_intrinsic, look_down=look_down
-        )
 
-    if dual_sys_output.output_action is not None and dual_sys_output.output_action == [0]:
-        zero_action_count += 1
-    else:
-        zero_action_count = 0
+    dual_sys_output.output_action, reset_after_stop = action_processor.process_stop_action(
+        dual_sys_output.output_action, instruction_intent
+    )
+    if reset_after_stop:
+        print("[Stop Action] following produced [0] 5 times. Resetting history.")
+        agent.reset()
 
-    if zero_action_count >= 5:
-        if instruction_intent == 'navigation':
-            print("[Stop Action] navigation produced [0] 5 times. Sending [-1].")
-            dual_sys_output.output_action = [-1]
-        else:
-            print("[Stop Action] following produced [0] 5 times. Resetting history and retrying.")
-            agent.reset()
-            look_down = False
-            dual_sys_output, yolo_output = agent.step(
-                image, depth, camera_pose, instruction, intrinsic=args.camera_intrinsic, look_down=look_down
-            )
-        zero_action_count = 0
+    dual_sys_output.output_action, reset_after_turn = action_processor.process_turn_action(
+        dual_sys_output.output_action
+    )
+    if reset_after_turn:
+        print("[Look Down Action] reset history and turn.")
+        agent.reset()
 
     json_output = {}
     if dual_sys_output.output_action is not None:
@@ -245,11 +284,7 @@ if __name__ == '__main__':
     ############### 위 링크에서 사용한 값 plan_step_gap=8 였음.
     args = parser.parse_args()
 
-    instruction_classifier = SentenceTransformer(
-        "nlpai-lab/KURE-v1",
-        device="cuda"
-    )
-    instruction_intent_embeddings = load_intent_embeddings(instruction_classifier)
+    instruction_classifier = InstructionClassifier()
 
     args.camera_intrinsic = np.array(
         [
