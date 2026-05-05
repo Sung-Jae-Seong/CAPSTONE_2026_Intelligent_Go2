@@ -303,7 +303,6 @@ class Go2Manager(Node):
 
     def toggle_run_threads_cb(self, request, response):
         if request.data:
-            self.publish_avoid_ready()
             run_enabled.set()
             response.message = "control/planning threads enabled"
         else:
@@ -433,18 +432,6 @@ class Go2Manager(Node):
         req.parameter = json.dumps(parameter, separators=(",", ":"))
         req.binary = []
         return req
-
-    def publish_avoid_ready(self):
-        self.control_pub.publish(
-            self.make_avoid_request(1001, {"enable": True}, noreply=False)
-        )
-        self.control_pub.publish(
-            self.make_avoid_request(
-                1004,
-                {"is_remote_commands_from_api": True},
-                noreply=False,
-            )
-        )
 
     def move(self, vx, vy, vyaw):
         self.control_pub.publish(
