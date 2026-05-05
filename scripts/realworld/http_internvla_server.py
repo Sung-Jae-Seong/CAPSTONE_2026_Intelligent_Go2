@@ -7,6 +7,7 @@ from datetime import datetime
 import numpy as np
 from flask import Flask, jsonify, request
 from PIL import Image
+from sentence_transformers import SentenceTransformer
 
 ######## ros2 viz
 import cv2
@@ -26,6 +27,10 @@ bridge = CvBridge()
 idx = 0
 start_time = time.time()
 output_dir = ''
+zero_action_count = 0
+last_classified_instruction = None
+instruction_classifier = None
+instruction_intent_embeddings = {}
 
 ######## logging server
 # import go2_monitor
@@ -41,15 +46,43 @@ output_dir = ''
 
 
 ######## instruction update
-instruction = "approach to the ball"
+instruction = "move to the door"
+
+def load_intent_embeddings(classifier):
+    intent_embedding_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'instruction_embeddings.npz')
+    if os.path.exists(intent_embedding_path):
+        with np.load(intent_embedding_path) as intent_embeddings:
+            return {
+                'navigation': intent_embeddings['navigation'],
+                'following': intent_embeddings['following'],
+            }
+
+    embeddings = {
+        'navigation': classifier.encode(
+            ['navigation', 'approach to', 'move to', 'go to', '접근', '이동하다'],
+            normalize_embeddings=True,
+        ),
+        'following': classifier.encode(
+            ['follow', 'tracking', '따라가다'],
+            normalize_embeddings=True,
+        ),
+    }
+    np.savez(
+        intent_embedding_path,
+        navigation=embeddings['navigation'],
+        following=embeddings['following'],
+    )
+    return embeddings
 
 @app.route("/update_instruction", methods=["POST"])
 def update_instruction():
-    global instruction
+    global instruction, zero_action_count, last_classified_instruction
 
     new_instruction = request.get_data(as_text=True)
     if new_instruction and len(new_instruction) > 0:
         instruction = new_instruction.strip()
+        zero_action_count = 0
+        last_classified_instruction = None
         return f"Successfully updated to: {new_instruction}\n", 200
     else:
         return "Error: Empty instruction\n", 400
@@ -57,7 +90,7 @@ def update_instruction():
 
 @app.route("/eval_dual", methods=['POST'])
 def eval_dual():
-    global idx, output_dir, start_time
+    global idx, output_dir, start_time, zero_action_count, last_classified_instruction
     start_time = time.time()
 
     image_file = request.files['image']
@@ -77,12 +110,26 @@ def eval_dual():
 
     camera_pose = np.array([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]])
     ######## instruction update
-    print('[Current Instruction]', instruction[:10], '...')
+    print('[Current Instruction]', instruction, '...')
     ######## instruction update
+    if instruction != last_classified_instruction:
+        zero_action_count = 0
+        last_classified_instruction = instruction
+
+    instruction_embedding = instruction_classifier.encode(instruction, normalize_embeddings=True)
+    navigation_score = float(np.max(instruction_intent_embeddings['navigation'] @ instruction_embedding))
+    following_score = float(np.max(instruction_intent_embeddings['following'] @ instruction_embedding))
+    instruction_intent = 'navigation' if navigation_score >= following_score else 'following'
+    print(
+        f"[Instruction Intent] {instruction_intent} "
+        f"navigation={navigation_score:.4f} following={following_score:.4f}"
+    )
+
     policy_init = data['reset']
     if policy_init:
         start_time = time.time()
         idx = 0
+        zero_action_count = 0
         output_dir = 'output/runs' + datetime.now().strftime('%m-%d-%H%M')
         os.makedirs(output_dir, exist_ok=True)
         print("init reset model!!!")
@@ -102,6 +149,24 @@ def eval_dual():
         dual_sys_output, yolo_output = agent.step(
             image, depth, camera_pose, instruction, intrinsic=args.camera_intrinsic, look_down=look_down
         )
+
+    if dual_sys_output.output_action is not None and dual_sys_output.output_action == [0]:
+        zero_action_count += 1
+    else:
+        zero_action_count = 0
+
+    if zero_action_count >= 5:
+        if instruction_intent == 'navigation':
+            print("[Stop Action] navigation produced [0] 5 times. Sending [-1].")
+            dual_sys_output.output_action = [-1]
+        else:
+            print("[Stop Action] following produced [0] 5 times. Resetting history and retrying.")
+            agent.reset()
+            look_down = False
+            dual_sys_output, yolo_output = agent.step(
+                image, depth, camera_pose, instruction, intrinsic=args.camera_intrinsic, look_down=look_down
+            )
+        zero_action_count = 0
 
     json_output = {}
     if dual_sys_output.output_action is not None:
@@ -151,7 +216,7 @@ def eval_dual():
 
             msg = bridge.cv2_to_imgmsg(viz_img, encoding="bgr8")
             viz_pub.publish(msg)
-            
+
         except Exception as e:
             print(f"Failed to publish visualization: {e}")
     ######## ros2 viz
@@ -167,7 +232,7 @@ if __name__ == '__main__':
     model_path = f'/{project_path}/checkpoints/InternVLA-N1-DualVLN'
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--device", type=str, default="cuda:0")
+    parser.add_argument("--device", type=str, default="cuda:1")
     parser.add_argument("--model_path", type=str, default=model_path)
     parser.add_argument("--resize_w", type=int, default=384)
     parser.add_argument("--resize_h", type=int, default=384)
@@ -179,6 +244,12 @@ if __name__ == '__main__':
     ############### https://zhuanlan.zhihu.com/p/1969046543286907790
     ############### 위 링크에서 사용한 값 plan_step_gap=8 였음.
     args = parser.parse_args()
+
+    instruction_classifier = SentenceTransformer(
+        "nlpai-lab/KURE-v1",
+        device="cuda"
+    )
+    instruction_intent_embeddings = load_intent_embeddings(instruction_classifier)
 
     args.camera_intrinsic = np.array(
         [
