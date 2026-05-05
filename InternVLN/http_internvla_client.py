@@ -135,7 +135,6 @@ def control_thread():
 def planning_thread():
     global trajs_in_world
 
-    zero_count = 0
     while True:
         if not run_enabled.is_set():
             time.sleep(0.1)
@@ -225,6 +224,11 @@ def planning_thread():
 
             elif 'discrete_action' in response:
                 actions = response['discrete_action']
+                if -1 in actions:
+                    print("received -1 action, turning thread state OFF")
+                    run_enabled.clear()
+                    manager.move(0.0, 0.0, 0.0)
+                    continue
                 if actions != [5] and actions != [9]:
                     x_, y_, yaw_ = odom_infer
                     base_homo = np.array([
@@ -235,16 +239,6 @@ def planning_thread():
                     ])
                     manager.incremental_change_goal(actions, base_homo=base_homo)
                     current_control_mode = ControlMode.PID_Mode
-                    if 0 in actions:
-                        zero_count += 1
-                    else:
-                        zero_count = 0
-                    if zero_count > 5:
-                        print("zero_count > 5, turning thread state OFF")
-                        run_enabled.clear()
-                        manager.move(0.0, 0.0, 0.0)
-                        zero_count = 0
-                        continue
         else:
             print(f"skip planning. odom_infer: {odom_infer is not None} rgb_bytes: {rgb_bytes is not None} depth_bytes: {depth_bytes is not None}")
             time.sleep(0.1)
