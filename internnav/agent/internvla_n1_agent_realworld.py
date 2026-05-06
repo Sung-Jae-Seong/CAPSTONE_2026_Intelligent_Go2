@@ -31,7 +31,7 @@ import logging
 logging.getLogger('ultralytics').setLevel(logging.ERROR)
 
 # LOVON 모델 절대경로 하드코딩
-YOLO_MODEL_PATH = "/home/tenstorrent/LOVON/deploy/models/yolo-models/yolo11x.pt"
+YOLO_MODEL_PATH = "/home/tenstorrent/LOVON/deploy/models/yolo-models/yolo26x.pt"
 OBJECT_EXTRACTION_MODEL_PATH = "/home/tenstorrent/LOVON/models/model_object_extraction_n1000000_d64_h4_l2_f256_msl64_hold_success_legacy"
 LOVON_TOKENIZER_PATH = "/home/tenstorrent/LOVON/models/tokenizer_language2motion_n1000000"
 # ------------------------------------------------
@@ -99,6 +99,14 @@ class InternVLAN1AsyncAgent:
         self.output_pixel = None
         self.pixel_goal_rgb = None
         self.pixel_goal_depth = None
+        self.output_source = None
+        self.output_target = None
+        self.output_trajectory_cache = None
+        self.has_seen_first_yolo = False
+        self.pre_yolo_stop_count = 0
+        self.pre_yolo_stop_limit = 5
+        self.search_turn_action = None
+        self.miss_action_history = []
 
         # YOLO + Object Extractor 초기화 (LOVON 절대경로)
         self.yolo_model = YOLO(YOLO_MODEL_PATH)
@@ -112,6 +120,11 @@ class InternVLAN1AsyncAgent:
         self.yolo_history_size = 3
         self.yolo_history_target = None
         self.yolo_history = []
+        self.yolo_traj_mismatch_target = None
+        self.yolo_traj_mismatch_count = 0
+        self.yolo_traj_mismatch_limit = 2
+        self.llm_traj_mismatch_count = 0
+        self.llm_traj_mismatch_limit = 2
 
     def reset(self):
         self.rgb_list = []
@@ -127,12 +140,22 @@ class InternVLAN1AsyncAgent:
         self.output_pixel = None
         self.pixel_goal_rgb = None
         self.pixel_goal_depth = None
+        self.output_source = None
+        self.output_target = None
+        self.output_trajectory_cache = None
+        self.has_seen_first_yolo = False
+        self.pre_yolo_stop_count = 0
+        self.search_turn_action = None
+        self.miss_action_history = []
 
         self.save_dir = "test_data/" + datetime.now().strftime("%Y%m%d_%H%M%S")
         os.makedirs(self.save_dir, exist_ok=True)
         self.input_images = []
         self.yolo_history_target = None
         self.yolo_history = []
+        self.yolo_traj_mismatch_target = None
+        self.yolo_traj_mismatch_count = 0
+        self.llm_traj_mismatch_count = 0
         torch.cuda.empty_cache()
 
     def parse_actions(self, output):
@@ -213,6 +236,100 @@ class InternVLAN1AsyncAgent:
         cy_scaled = int(cy * scale_y)
         return cx_scaled, cy_scaled
 
+    def _is_valid_depth(self, depth_value):
+        return np.isfinite(depth_value) and 0.05 < float(depth_value) < 10.0
+
+    def _find_yolo_goal_point(self, bbox, depth):
+        """bbox 중심이 아니라 하단부에서 depth가 유효한 navigation point를 찾습니다."""
+        img_h, img_w = depth.shape[:2]
+        x1, y1, x2, y2 = bbox
+        box_h = max(1, y2 - y1)
+        base_x = int(round((x1 + x2) / 2))
+        base_y = int(min(img_h - 1, max(0, y2 - max(4, box_h // 10))))
+
+        x_offsets = [0, -8, 8, -16, 16, -24, 24, -32, 32]
+        y_offsets = [0, -6, -12, -18, 6, 12]
+        for dy in y_offsets:
+            y = int(np.clip(base_y + dy, 0, img_h - 1))
+            for dx in x_offsets:
+                x = int(np.clip(base_x + dx, 0, img_w - 1))
+                depth_value = depth[y, x]
+                if self._is_valid_depth(depth_value):
+                    return x, y, float(depth_value)
+        return None
+
+    def _trajectory_matches_goal(self, planned_trajectory, goal_pixel):
+        traj = np.asarray(planned_trajectory)
+        if traj.ndim != 2 or traj.shape[0] < 2 or traj.shape[1] < 2:
+            return False
+
+        goal_dx = float(goal_pixel[1]) - (self.resize_w / 2.0)
+        side_margin = max(12.0, self.resize_w * 0.06)
+        probe_idx = min(len(traj) - 1, 3)
+        p1_idx = min(len(traj) - 1, 1)
+        p2_idx = min(len(traj) - 1, 2)
+        endpoint = traj[-1]
+        probe_point = traj[probe_idx]
+        p1 = traj[p1_idx]
+        p2 = traj[p2_idx]
+        forward_endpoint = float(endpoint[0])
+        lateral_endpoint = float(endpoint[1])
+        lateral_probe = float(probe_point[1])
+        min_early_lateral = float(min(p1[1], p2[1], probe_point[1]))
+        max_early_lateral = float(max(p1[1], p2[1], probe_point[1]))
+
+        if forward_endpoint < -0.02:
+            return False
+        if goal_dx < -side_margin:
+            if lateral_endpoint < -0.03 or lateral_probe < -0.01 or min_early_lateral < -0.02:
+                return False
+        elif goal_dx > side_margin:
+            if lateral_endpoint > 0.03 or lateral_probe > 0.01 or max_early_lateral > 0.02:
+                return False
+        else:
+            if abs(lateral_endpoint) > 0.08 or abs(lateral_probe) > 0.03:
+                return False
+        return True
+
+    def _goal_side_action(self, goal_pixel):
+        goal_dx = float(goal_pixel[1]) - (self.resize_w / 2.0)
+        side_margin = max(12.0, self.resize_w * 0.06)
+        if goal_dx < -side_margin:
+            return [2]
+        if goal_dx > side_margin:
+            return [3]
+        return [1]
+
+    def _postprocess_trajectory_for_goal(self, planned_trajectory, goal_pixel):
+        traj = np.asarray(planned_trajectory, dtype=np.float32).copy()
+        if traj.ndim != 2 or traj.shape[0] < 2 or traj.shape[1] < 2:
+            return planned_trajectory
+
+        goal_dx = float(goal_pixel[1]) - (self.resize_w / 2.0)
+        side_margin = max(12.0, self.resize_w * 0.06)
+        start_idx = min(len(traj) - 1, 3)
+        if start_idx <= 0:
+            return traj
+
+        for i in range(1, len(traj)):
+            if traj[i, 0] < traj[i - 1, 0]:
+                traj[i, 0] = traj[i - 1, 0]
+
+        lateral_target = min(0.18, max(0.03, 0.16 * abs(goal_dx) / (self.resize_w / 2.0)))
+        ramp_steps = 6.0
+        if goal_dx < -side_margin:
+            for i in range(start_idx, len(traj)):
+                progress = min(1.0, (i - start_idx + 1) / ramp_steps)
+                traj[i, 1] = max(traj[i, 1], lateral_target * progress)
+        elif goal_dx > side_margin:
+            for i in range(start_idx, len(traj)):
+                progress = min(1.0, (i - start_idx + 1) / ramp_steps)
+                traj[i, 1] = min(traj[i, 1], -lateral_target * progress)
+        else:
+            for i in range(start_idx, len(traj)):
+                traj[i, 1] *= 0.35
+        return traj
+
     def step(self, rgb, depth, pose, instruction, intrinsic, look_down=False):
         dual_sys_output = S2Output()
         yolo_output = None
@@ -221,6 +338,7 @@ class InternVLAN1AsyncAgent:
             self.output_action, self.output_latent, self.output_pixel, yolo_output = self.step_s2(
                 rgb, depth, pose, instruction, intrinsic, look_down
             )
+            self.output_trajectory_cache = None
             self.last_s2_idx = self.episode_idx
             dual_sys_output.output_pixel = self.output_pixel
             self.pixel_goal_rgb = copy.deepcopy(rgb)
@@ -231,26 +349,113 @@ class InternVLAN1AsyncAgent:
         if self.output_action is not None:
             dual_sys_output.output_action = copy.deepcopy(self.output_action)
             self.output_action = None
+            self.output_source = None
+            self.output_target = None
+            self.output_trajectory_cache = None
         elif self.output_latent is not None:
-            processed_pixel_rgb = np.array(Image.fromarray(self.pixel_goal_rgb).resize((224, 224))) / 255
-            processed_pixel_depth = np.array(Image.fromarray(self.pixel_goal_depth).resize((224, 224)))
-            processed_rgb = np.array(Image.fromarray(rgb).resize((224, 224))) / 255
-            processed_depth = np.array(Image.fromarray(depth).resize((224, 224)))
+            if self.output_trajectory_cache is None:
+                processed_pixel_rgb = np.array(Image.fromarray(self.pixel_goal_rgb).resize((224, 224))) / 255
+                processed_pixel_depth = np.array(Image.fromarray(self.pixel_goal_depth).resize((224, 224)))
+                processed_rgb = np.array(Image.fromarray(rgb).resize((224, 224))) / 255
+                processed_depth = np.array(Image.fromarray(depth).resize((224, 224)))
 
-            rgbs = (
-                torch.stack([torch.from_numpy(processed_pixel_rgb), torch.from_numpy(processed_rgb)])
-                .unsqueeze(0)
-                .to(self.device)
-            )
-            depths = (
-                torch.stack([torch.from_numpy(processed_pixel_depth), torch.from_numpy(processed_depth)])
-                .unsqueeze(0)
-                .unsqueeze(-1)
-                .to(self.device)
-            )
-            trajectories = self.step_s1(self.output_latent, rgbs, depths)
-
-            dual_sys_output.output_trajectory = traj_to_actions(trajectories, use_discrate_action=False)
+                rgbs = (
+                    torch.stack([torch.from_numpy(processed_pixel_rgb), torch.from_numpy(processed_rgb)])
+                    .unsqueeze(0)
+                    .to(self.device)
+                )
+                depths = (
+                    torch.stack([torch.from_numpy(processed_pixel_depth), torch.from_numpy(processed_depth)])
+                    .unsqueeze(0)
+                    .unsqueeze(-1)
+                    .to(self.device)
+                )
+                trajectories = self.step_s1(self.output_latent, rgbs, depths)
+                planned_trajectory = traj_to_actions(trajectories, use_discrate_action=False)
+                if self.output_source == "YOLO" and self.output_pixel is not None:
+                    planned_trajectory = self._postprocess_trajectory_for_goal(
+                        planned_trajectory, self.output_pixel
+                    )
+                self.output_trajectory_cache = copy.deepcopy(planned_trajectory)
+            else:
+                planned_trajectory = copy.deepcopy(self.output_trajectory_cache)
+            if self.output_pixel is not None:
+                traj = np.asarray(planned_trajectory)
+                traj_p0 = traj[0].tolist() if traj.ndim == 2 and len(traj) > 0 else None
+                traj_p1 = traj[1].tolist() if traj.ndim == 2 and len(traj) > 1 else None
+                traj_p2 = traj[2].tolist() if traj.ndim == 2 and len(traj) > 2 else None
+                traj_p3 = traj[3].tolist() if traj.ndim == 2 and len(traj) > 3 else None
+                traj_end = traj[-1].tolist() if traj.ndim == 2 and len(traj) > 0 else None
+                traj_match = self._trajectory_matches_goal(planned_trajectory, self.output_pixel)
+                print(
+                    f"[TRAJ] src={self.output_source} goal={self.output_pixel} "
+                    f"live_yolo={yolo_output is not None} "
+                    f"planner_mode={None if yolo_output is None else yolo_output.get('planner_mode')} "
+                    f"cached={self.output_trajectory_cache is not None} "
+                    f"p0={traj_p0} p1={traj_p1} p2={traj_p2} p3={traj_p3} end={traj_end} "
+                    f"match={traj_match}"
+                )
+                if self.output_source == "YOLO":
+                    current_target = self.output_target
+                    if current_target != self.yolo_traj_mismatch_target:
+                        self.yolo_traj_mismatch_target = current_target
+                        self.yolo_traj_mismatch_count = 0
+                    if not self._trajectory_matches_goal(planned_trajectory, self.output_pixel):
+                        if yolo_output is not None and yolo_output.get('planner_mode') == 'yolo_direct':
+                            fallback_action = self._goal_side_action(self.output_pixel)
+                            print(
+                                f"[YOLO] visible target but inconsistent trajectory for goal={self.output_pixel}, "
+                                f"override with action={fallback_action}"
+                            )
+                            self.output_latent = None
+                            self.output_pixel = None
+                            self.output_source = None
+                            self.output_target = None
+                            self.output_trajectory_cache = None
+                            dual_sys_output.output_pixel = None
+                            dual_sys_output.output_action = fallback_action
+                            return dual_sys_output, yolo_output
+                        self.yolo_traj_mismatch_count += 1
+                        self.llm_traj_mismatch_count = 0
+                        if self.yolo_traj_mismatch_count <= self.yolo_traj_mismatch_limit:
+                            print(
+                                f"[YOLO] inconsistent trajectory for goal={self.output_pixel}, "
+                                f"hold with STOP ({self.yolo_traj_mismatch_count}/{self.yolo_traj_mismatch_limit})"
+                            )
+                            dual_sys_output.output_pixel = None
+                            dual_sys_output.output_action = [0]
+                            return dual_sys_output, yolo_output
+                        print(
+                            f"[YOLO] inconsistent trajectory persists for target={current_target}, "
+                            "allow trajectory to continue."
+                        )
+                    else:
+                        self.yolo_traj_mismatch_count = 0
+                    self.llm_traj_mismatch_count = 0
+                else:
+                    self.yolo_traj_mismatch_target = None
+                    self.yolo_traj_mismatch_count = 0
+                    if not self._trajectory_matches_goal(planned_trajectory, self.output_pixel):
+                        self.llm_traj_mismatch_count += 1
+                        if self.llm_traj_mismatch_count <= self.llm_traj_mismatch_limit:
+                            print(
+                                f"[LLM] inconsistent trajectory for goal={self.output_pixel}, "
+                                f"hold with STOP ({self.llm_traj_mismatch_count}/{self.llm_traj_mismatch_limit})"
+                            )
+                            dual_sys_output.output_pixel = None
+                            dual_sys_output.output_action = [0]
+                            return dual_sys_output, yolo_output
+                        print(
+                            "[LLM] inconsistent trajectory persists for pixel goal, "
+                            "allow trajectory to continue."
+                        )
+                    else:
+                        self.llm_traj_mismatch_count = 0
+            else:
+                self.yolo_traj_mismatch_target = None
+                self.yolo_traj_mismatch_count = 0
+                self.llm_traj_mismatch_count = 0
+            dual_sys_output.output_trajectory = planned_trajectory
 
         return dual_sys_output, yolo_output
 
@@ -323,21 +528,68 @@ class InternVLAN1AsyncAgent:
         self.yolo_history.append(yolo_detection)
         if len(self.yolo_history) > self.yolo_history_size:
             self.yolo_history.pop(0)
-        if yolo_detection is None:
-            recent_detections = [det for det in self.yolo_history if det is not None]
-            if recent_detections:
-                avg_cx = sum(det[0] for det in recent_detections) / len(recent_detections)
-                avg_cy = sum(det[1] for det in recent_detections) / len(recent_detections)
-                avg_conf = sum(det[2] for det in recent_detections) / len(recent_detections)
-                avg_bbox = [
-                    int(sum(det[3][i] for det in recent_detections) / len(recent_detections))
-                    for i in range(4)
-                ]
-                yolo_detection = (avg_cx, avg_cy, avg_conf, tuple(avg_bbox))
         yolo_center = (yolo_detection[0], yolo_detection[1]) if yolo_detection else None
         yolo_conf = yolo_detection[2] if yolo_detection else None
         yolo_bbox = yolo_detection[3] if yolo_detection else None
         yolo_output = None  # YOLO 감지 결과 (감지 시 채워짐)
+
+        if yolo_detection is not None:
+            orig_h, orig_w = rgb.shape[:2]
+            goal_point = self._find_yolo_goal_point(yolo_bbox, depth)
+            if goal_point is not None:
+                goal_x, goal_y, _ = goal_point
+                goal_x_scaled, goal_y_scaled = self._scale_yolo_to_llm_coords(
+                    goal_x, goal_y, orig_h, orig_w
+                )
+                yolo_coord_str = f"{goal_x_scaled}, {goal_y_scaled}"
+                yolo_output = {
+                    'target': target_object,
+                    'confidence': yolo_conf,
+                    'coord': yolo_coord_str,
+                    'bbox': yolo_bbox,
+                    'planner_mode': 'yolo_direct',
+                }
+                pixel_goal = [goal_y_scaled, goal_x_scaled]  # [y, x] LLM 좌표계
+                self.output_source = "YOLO"
+                self.output_target = target_object
+                self.llm_output = yolo_coord_str
+                with open(f"{self.save_dir}/llm_output_{self.episode_idx: 04d}.txt", 'w') as f:
+                    f.write(self.llm_output)
+                yolo_tokens = self.processor.tokenizer.encode(
+                    yolo_coord_str, add_special_tokens=False
+                )
+                yolo_token_ids = torch.tensor([yolo_tokens], device=inputs.input_ids.device)
+                modified_output_ids = torch.cat([inputs.input_ids, yolo_token_ids], dim=1)
+                image_grid_thw = torch.cat(
+                    [thw.unsqueeze(0) for thw in inputs.image_grid_thw], dim=0
+                )
+                pixel_values = inputs.pixel_values
+                with torch.inference_mode():
+                    traj_latents = self.model.generate_latents(
+                        modified_output_ids, pixel_values, image_grid_thw
+                    )
+                traj_latents = traj_latents.clone()
+                print(
+                    f"[YOLO] target={target_object}, conf={yolo_conf:.3f}, "
+                    f"goal_pixel={pixel_goal}, bbox={yolo_bbox}"
+                )
+                print(
+                    f"[GOAL] src=YOLO target={target_object} bbox={yolo_bbox} "
+                    f"goal_raw=({goal_x}, {goal_y}, {goal_point[2]:.3f}) "
+                    f"goal_scaled={pixel_goal} goal_dx={goal_x_scaled - self.resize_w / 2:.1f}"
+                )
+                print("[YOLO] visible target, generate trajectory and postprocess it")
+                self.has_seen_first_yolo = True
+                self.pre_yolo_stop_count = 0
+                self.search_turn_action = None
+                self.miss_action_history = []
+                del inputs, pixel_values, image_grid_thw
+                torch.cuda.empty_cache()
+                return None, traj_latents, pixel_goal, yolo_output
+            print(
+                f"[YOLO] target={target_object} detected but goal point is invalid, "
+                "fallback to LLM."
+            )
 
         t0 = time.time()
         with torch.inference_mode():
@@ -362,59 +614,19 @@ class InternVLAN1AsyncAgent:
         self.past_key_values = copy.deepcopy(outputs.past_key_values)
         print(f"output {self.episode_idx}  {self.llm_output} cost: {t1 - t0}s")
 
-        # ---- YOLO detected (confidence >= threshold(default: 0.3)) → token replacement로 pixel goal 강제 ----
-        if yolo_center is not None:
-            orig_h, orig_w = rgb.shape[:2]
-            # YOLO 좌표(원본 해상도) → LLM 좌표(384x384 리사이즈 해상도)로 스케일링
-            cx_scaled, cy_scaled = self._scale_yolo_to_llm_coords(
-                yolo_center[0], yolo_center[1], orig_h, orig_w
-            )
-            yolo_coord_str = f"{cx_scaled}, {cy_scaled}"
-            yolo_output = {
-                'target': target_object,
-                'confidence': yolo_conf,
-                'coord': yolo_coord_str,
-                'bbox': yolo_bbox,
-            }
-            self.llm_output = yolo_coord_str
-            with open(f"{self.save_dir}/llm_output_{self.episode_idx: 04d}.txt", 'w') as f:
-                f.write(self.llm_output)
-            yolo_tokens = self.processor.tokenizer.encode(
-                yolo_coord_str, add_special_tokens=False
-            )
-            yolo_token_ids = torch.tensor(
-                [yolo_tokens], device=output_ids.device
-            )
-
-            # 입력 토큰 유지 + 생성된 좌표 토큰을 YOLO 좌표 토큰으로 교체
-            input_len = inputs.input_ids.shape[1]
-            modified_output_ids = torch.cat([
-                output_ids[:, :input_len],
-                yolo_token_ids,
-            ], dim=1)
-
-            pixel_goal = [cy_scaled, cx_scaled]  # [y, x] LLM 좌표계
-            image_grid_thw = torch.cat(
-                [thw.unsqueeze(0) for thw in inputs.image_grid_thw], dim=0
-            )
-            pixel_values = inputs.pixel_values
-            with torch.inference_mode():
-                traj_latents = self.model.generate_latents(
-                    modified_output_ids, pixel_values, image_grid_thw
-                )
-            traj_latents = traj_latents.clone()
-            print(
-                f"[YOLO] target={target_object}, conf={yolo_conf:.3f}, "
-                f"yolo_coord={yolo_coord_str}, llm_output={self.llm_output}"
-            )
-            del outputs, inputs, output_ids, pixel_values, image_grid_thw
-            torch.cuda.empty_cache()
-            return None, traj_latents, pixel_goal, yolo_output
-
         # ---- YOLO 미감지 → 기존 LLM 기반 분기 유지 ----
         if is_pixel_goal:
             coord = [int(c) for c in re.findall(r'\d+', self.llm_output)]
             pixel_goal = [int(coord[1]), int(coord[0])]
+            self.output_source = "LLM_PIXEL"
+            self.output_target = None
+            self.pre_yolo_stop_count = 0
+            self.search_turn_action = None
+            self.miss_action_history = []
+            print(
+                f"[GOAL] src=LLM_PIXEL text='{self.llm_output}' "
+                f"goal_scaled={pixel_goal} goal_dx={coord[0] - self.resize_w / 2:.1f}"
+            )
             image_grid_thw = torch.cat([thw.unsqueeze(0) for thw in inputs.image_grid_thw], dim=0)
             pixel_values = inputs.pixel_values
             t0 = time.time()
@@ -423,6 +635,36 @@ class InternVLAN1AsyncAgent:
             return None, traj_latents, pixel_goal, None
         else:
             action_seq = self.parse_actions(self.llm_output)
+            action_seq = [0 if action == 5 else action for action in action_seq]
+            primary_action = action_seq[0] if len(action_seq) > 0 else 0
+            self.miss_action_history.append(primary_action)
+            if len(self.miss_action_history) > 3:
+                self.miss_action_history = self.miss_action_history[-3:]
+            if primary_action == 0:
+                self.pre_yolo_stop_count += 1
+            else:
+                self.pre_yolo_stop_count = 0
+            if not self.has_seen_first_yolo:
+                recent_actions = self.miss_action_history[-3:]
+                if recent_actions == [2, 0, 3]:
+                    self.search_turn_action = 2
+                    print("[SEARCH] pattern [2, 0, 3] detected, lock search direction to LEFT")
+                elif recent_actions == [3, 0, 2]:
+                    self.search_turn_action = 3
+                    print("[SEARCH] pattern [3, 0, 2] detected, lock search direction to RIGHT")
+                if self.search_turn_action is None and self.pre_yolo_stop_count >= self.pre_yolo_stop_limit:
+                    last_turn_action = next((action for action in reversed(self.miss_action_history) if action in [2, 3]), 3)
+                    self.search_turn_action = last_turn_action
+                    print(
+                        f"[SEARCH] repeated STOP before first YOLO ({self.pre_yolo_stop_count}), "
+                        f"ignore STOP and lock search direction to {self.search_turn_action}"
+                    )
+                if self.search_turn_action is not None:
+                    self.output_source = "SEARCH_ACTION"
+                    self.output_target = None
+                    return [self.search_turn_action], None, None, None
+            self.output_source = "ACTION"
+            self.output_target = None
             return action_seq, None, None, None
 
     def step_s1(self, latent, rgb, depth):

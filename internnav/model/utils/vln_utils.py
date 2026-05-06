@@ -126,8 +126,14 @@ def traj_to_actions(dp_actions, use_discrate_action=True):
         return actions
 
     # unnormalize
-    dp_actions[:, :, :2] /= 4.0
-    all_trajectory = reconstruct_xy_from_delta(dp_actions.float().cpu().numpy())
+    # 수정!!!!!!!!!!!!!!
+    # dp_actions[:, :, :2] /= 4.0
+    # dp_actions[:, :, :2] = dp_actions[:, :, :2] / 4.0
+    # all_trajectory = reconstruct_xy_from_delta(dp_actions.float().cpu().numpy())
+    # 여기부터 3줄
+    dp_actions_np = dp_actions.float().cpu().numpy()
+    dp_actions_np[:, :, :2] /= 4.0
+    all_trajectory = reconstruct_xy_from_delta(dp_actions_np)
     trajectory = np.mean(all_trajectory, axis=0)
     if use_discrate_action:
         actions = trajectory_to_discrete_actions_close_to_goal(trajectory)
