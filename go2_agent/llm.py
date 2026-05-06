@@ -29,6 +29,7 @@ Rules:
 3. A subtask may be:
    - a navigation command toward one target object or location, or
    - a single direct motion command with one duration, distance, or angle.
+   - just chat with user or explain something.
 4. Maintain the original logical order.
 5. Output ONLY the numbered task list. No extra explanation.
 """
