@@ -6,7 +6,4 @@ memo
 
 *__pycache__/*
 tools/__pycache__/
-Thirdparty/.runtime
-Thirdparty/*.png
-Thirdparty/*.csv
-Thirdparty/*.py
+Thirdparty/*
