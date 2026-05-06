@@ -14,8 +14,7 @@
 
 import os
 import re
-from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List
 
 import dotenv
 from langchain_openai import ChatOpenAI
@@ -123,113 +122,84 @@ def get_env_variable(var_name: str) -> str:
     return value
 
 
-@dataclass
-class SubTask:
-    index: int
-    instruction: str
-
-    def __repr__(self):
-        return f"Task {self.index}: {self.instruction}"
+def parse_subtasks(response: str) -> List[str]:
+    matches = re.findall(r"Task\s+\d+\s*[:\.]\s*(.+)", response, re.MULTILINE)
+    return [instruction.strip() for instruction in matches if instruction.strip()]
 
 
-@dataclass
-class PlannerState:
-    original_instruction: str = ""
-    subtasks: List[SubTask] = field(default_factory=list)
-    current_task_idx: int = 0
-    completed: bool = False
+def decompose_instruction(llm, instruction: str) -> List[str]:
+    response = llm.invoke(
+        [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": USER_PROMPT_TEMPLATE.format(instruction=instruction),
+            },
+        ]
+    )
+    content = getattr(response, "content", response)
+    if isinstance(content, list):
+        content = "".join(
+            part.get("text", "") for part in content if isinstance(part, dict)
+        )
+    subtasks = parse_subtasks(str(content).strip())
+    return subtasks or [instruction]
 
-    @property
-    def current_task(self) -> Optional[SubTask]:
-        if self.completed or self.current_task_idx >= len(self.subtasks):
+
+class TaskPlanner:
+    def __init__(self):
+        self.subtasks = []
+        self.current_idx = 0
+        self.failed_idx = None
+        self.completed = True
+
+    def start(self, subtasks):
+        self.subtasks = list(subtasks)
+        self.current_idx = 0
+        self.failed_idx = None
+        self.completed = not self.subtasks
+
+    def current_task(self):
+        if self.completed or self.current_idx >= len(self.subtasks):
             return None
-        return self.subtasks[self.current_task_idx]
+        return self.subtasks[self.current_idx]
 
-    @property
-    def total_tasks(self) -> int:
-        return len(self.subtasks)
+    def current_status(self):
+        current = self.current_task()
+        failed_task = None
+        if self.failed_idx is not None and self.failed_idx < len(self.subtasks):
+            failed_task = self.subtasks[self.failed_idx]
+        return {
+            "current_idx": self.current_idx if current is not None else None,
+            "current_number": self.current_idx + 1 if current is not None else None,
+            "current_task": current,
+            "failed_idx": self.failed_idx,
+            "failed_number": self.failed_idx + 1 if failed_task is not None else None,
+            "failed_task": failed_task,
+            "total_tasks": len(self.subtasks),
+            "completed": self.completed,
+        }
 
-    @property
-    def progress_str(self) -> str:
+    def mark_success(self):
         if self.completed:
-            return "Task Success - All subtasks completed"
-        current = self.current_task
-        if current is None:
-            return "No tasks"
-        return f"[{self.current_task_idx + 1}/{self.total_tasks}] {current}"
-
-
-class LLMTaskPlanner:
-    def __init__(self, model_name: Optional[str] = None):
-        dotenv.load_dotenv(dotenv.find_dotenv())
-        self.model_name = model_name or os.getenv("OPENAI_MODEL", "Qwen/Qwen3.5-4B")
-        self.state = PlannerState()
-        self._llm = ChatOpenAI(
-            api_key=os.getenv("OPENAI_API_KEY", "EMPTY"),
-            base_url=os.getenv("OPENAI_BASE_URL"),
-            model=self.model_name,
-            temperature=0,
-            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
-        )
-
-    def decompose(self, instruction: str) -> List[SubTask]:
-        self.state = PlannerState(original_instruction=instruction)
-
-        response = self._llm.invoke(
-            [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": USER_PROMPT_TEMPLATE.format(instruction=instruction),
-                },
-            ]
-        )
-        content = getattr(response, "content", response)
-        if isinstance(content, list):
-            content = "".join(
-                part.get("text", "") for part in content if isinstance(part, dict)
-            )
-        content = str(content).strip()
-
-        subtasks = self._parse_subtasks(content)
-        if not subtasks:
-            subtasks = [SubTask(index=1, instruction=instruction)]
-
-        self.state.subtasks = subtasks
-        self.state.current_task_idx = 0
-        self.state.completed = False
-        return subtasks
-
-    def get_current_task(self) -> Optional[SubTask]:
-        return self.state.current_task
-
-    def get_current_instruction(self) -> Optional[str]:
-        task = self.state.current_task
-        return task.instruction if task else None
-
-    def on_task_success(self) -> Optional[SubTask]:
-        if self.state.completed:
             return None
-
-        self.state.current_task_idx += 1
-        if self.state.current_task_idx >= self.state.total_tasks:
-            self.state.completed = True
+        if self.failed_idx == self.current_idx:
+            self.failed_idx = None
+        self.current_idx += 1
+        if self.current_idx >= len(self.subtasks):
+            self.completed = True
             return None
-        return self.state.current_task
+        return self.current_task()
 
-    def reset(self):
-        self.state = PlannerState()
+    def mark_failed(self):
+        if self.current_task() is None:
+            return None
+        self.failed_idx = self.current_idx
+        return self.current_task()
 
-    @property
-    def is_completed(self) -> bool:
-        return self.state.completed
-
-    @staticmethod
-    def _parse_subtasks(response: str) -> List[SubTask]:
-        matches = re.findall(r"Task\s+(\d+)\s*[:\.]\s*(.+)", response, re.MULTILINE)
-        subtasks = []
-        for index_text, instruction in matches:
-            cleaned = instruction.strip()
-            if cleaned:
-                subtasks.append(SubTask(index=int(index_text), instruction=cleaned))
-        return subtasks
+    def retry_failed_task(self):
+        if self.failed_idx is None or self.failed_idx >= len(self.subtasks):
+            return None
+        self.current_idx = self.failed_idx
+        self.completed = False
+        return self.current_task()

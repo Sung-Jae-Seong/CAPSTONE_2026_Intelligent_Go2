@@ -15,13 +15,11 @@
 
 import asyncio
 import json
-import math
 import os
 import re
 import signal
 import sys
 import threading
-import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -47,38 +45,13 @@ from rosa import ROSA
 import rosa.prompts as rosa_base_prompts
 
 from help import get_help
-from llm import get_llm, LLMTaskPlanner
+from llm import get_llm, decompose_instruction, TaskPlanner
 from prompts import get_prompts
 from tools import avoid_api, InternVLN, lidar_slam_tool
-from tools.InternVLN import check_client_status
 
 instruction = ""
 POINTING_IMAGE_GOAL_KIND = "pointing_image_goal"
 TEXT_PAYLOAD_KEYS = ("prompt", "query", "command", "text", "instruction")
-INTERNVLN_SUCCESS_TIMEOUT = 300
-
-DIRECT_INTERNVLN_PATTERNS = [
-    r"\bfollow\b",
-    r"\bapproach\b",
-    r"\bgo to\b",
-    r"\bgo toward\b",
-    r"\bgo towards\b",
-    r"\bmove to\b",
-    r"\bmove toward\b",
-    r"\bmove towards\b",
-    r"\bnavigate to\b",
-    r"\bnavigate toward\b",
-    r"\bnavigate towards\b",
-    r"\bhead to\b",
-    r"\bhead toward\b",
-    r"\bhead towards\b",
-    r"\bwalk to\b",
-    r"\bwalk toward\b",
-    r"\bwalk towards\b",
-    r"사람.*이동",
-    r"따라가",
-    r"따라와",
-]
 
 STOP_PATTERNS = [
     r"\bstop\b",
@@ -90,68 +63,6 @@ STOP_PATTERNS = [
     r"멈춰라",
     r"중지",
     r"서라",
-]
-
-ROTATION_LEFT_KEYWORDS = (
-    "turn left",
-    "rotate left",
-    "left turn",
-    "to the left",
-    "toward the left",
-    "좌회전",
-    "왼쪽으로 돌아",
-    "왼쪽으로 회전",
-)
-ROTATION_RIGHT_KEYWORDS = (
-    "turn right",
-    "rotate right",
-    "right turn",
-    "to the right",
-    "toward the right",
-    "우회전",
-    "오른쪽으로 돌아",
-    "오른쪽으로 회전",
-)
-ROTATION_AROUND_KEYWORDS = ("turn around", "rotate around", "u-turn", "뒤돌아", "반바퀴", "180도 돌아")
-ROTATION_GENERIC_KEYWORDS = ("rotate", "turn", "회전", "좌회전", "우회전", "돌아")
-ROTATION_STOPWORDS = ("toward", "towards", "toward the", "towards the", "face the", "look at", "사람 쪽", "문 쪽", "의자 쪽")
-FORWARD_GENERIC_KEYWORDS = ("go", "move", "forward", "앞으로")
-DEFAULT_ROTATION_SPEED = 0.8
-DEFAULT_LINEAR_SPEED = 0.5
-
-LONG_HORIZON_KEYWORDS = [
-    "then", "after that", "after", "next", "finally", "and then",
-    "먼저", "그 다음", "이후에", "마지막으로", "다음으로",
-]
-
-SEQUENCE_KEYWORDS = [
-    " and ",
-    " and then ",
-    " then ",
-    " after that ",
-    " followed by ",
-    "그리고",
-    "그 다음",
-    "그다음",
-    "이후에",
-    ",",
-]
-
-LONG_HORIZON_ACTION_PATTERNS = [
-    r"\bfollow\b",
-    r"\bapproach\b",
-    r"\bgo to\b",
-    r"\bmove to\b",
-    r"\bnavigate to\b",
-    r"\bhead to\b",
-    r"\bwalk to\b",
-    r"\bgo\b",
-    r"\bmove\b",
-    r"\bturn\b",
-    r"\brotate\b",
-    r"좌회전",
-    r"우회전",
-    r"앞으로",
 ]
 
 
@@ -313,156 +224,6 @@ def normalize_rosa_system_prompts_for_vllm(extra_system_prompt: str = ""):
     prompts[:] = [("system", merged_content)] + remaining_prompts
 
 
-def maybe_handle_direct_internvln_request(query: str):
-    if not isinstance(query, str):
-        return None
-
-    normalized = query.strip()
-    if not normalized:
-        return None
-
-    lowered = normalized.lower()
-    if any(token in lowered for token in ("ros2 ", "topic ", "node ", "service ", "param ", "doctor", "example", "tutorial")):
-        return None
-
-    if not any(re.search(pattern, lowered) for pattern in DIRECT_INTERNVLN_PATTERNS):
-        return None
-
-    error = InternVLN._set_command(normalized)
-    if error:
-        return error
-
-    toggle_result = InternVLN._toggle_client_thread(True)
-    return "InternVLN command accepted: %s\n%s" % (normalized, toggle_result)
-
-
-def maybe_handle_direct_stop_request(query: str):
-    if not isinstance(query, str):
-        return None
-
-    normalized = query.strip()
-    if not normalized:
-        return None
-
-    lowered = normalized.lower()
-    if any(token in lowered for token in ("ros2 ", "topic ", "node ", "service ", "param ", "doctor", "example", "tutorial")):
-        return None
-
-    if not any(re.search(pattern, lowered) for pattern in STOP_PATTERNS):
-        return None
-
-    toggle_result = InternVLN._toggle_client_thread(False)
-    return "Stop command accepted: %s\n%s" % (normalized, toggle_result)
-
-
-def execute_direct_motion(vx: float, vy: float, vyaw: float, duration: float, label: str):
-    ready_result = avoid_api._ready_avoid()
-    if ready_result and not ready_result.startswith("Avoid API is ready"):
-        return ready_result
-
-    error = avoid_api.ros2_publish_for(
-        avoid_api.avoid_move_message(vx, vy, vyaw),
-        duration,
-    )
-    if error:
-        return error
-
-    error = avoid_api.ros2_publish_once(avoid_api.avoid_move_message(0.0, 0.0, 0.0))
-    if error:
-        return error
-
-    if ready_result:
-        return "%s\n%s" % (ready_result, label)
-    return label
-
-
-def maybe_handle_direct_motion_request(query: str):
-    if not isinstance(query, str):
-        return None
-
-    normalized = query.strip()
-    if not normalized:
-        return None
-
-    lowered = normalized.lower()
-
-    if any(token in lowered for token in ("ros2 ", "topic ", "node ", "service ", "param ", "doctor", "example", "tutorial")):
-        return None
-
-    if any(re.search(pattern, lowered) for pattern in DIRECT_INTERNVLN_PATTERNS):
-        return None
-
-    if not any(token in lowered for token in FORWARD_GENERIC_KEYWORDS + ROTATION_GENERIC_KEYWORDS):
-        return None
-
-    duration_match = re.search(r"(\d+(?:\.\d+)?)\s*(sec|secs|second|seconds|초)\b", lowered)
-    distance_match = re.search(r"(\d+(?:\.\d+)?)\s*(m|meter|meters|미터)\b", lowered)
-    angle_match = re.search(r"(\d+(?:\.\d+)?)\s*(degree|degrees|deg|도)\b", lowered)
-
-    if any(token in lowered for token in ROTATION_GENERIC_KEYWORDS) and not any(token in lowered for token in ROTATION_STOPWORDS):
-        direction = None
-        if any(token in lowered for token in ROTATION_AROUND_KEYWORDS):
-            direction = 1.0
-            angle_deg = 180.0
-        elif any(token in lowered for token in ROTATION_LEFT_KEYWORDS) or "counterclockwise" in lowered or "anti-clockwise" in lowered:
-            direction = 1.0
-            angle_deg = float(angle_match.group(1)) if angle_match else 90.0
-        elif any(token in lowered for token in ROTATION_RIGHT_KEYWORDS) or "clockwise" in lowered:
-            direction = -1.0
-            angle_deg = float(angle_match.group(1)) if angle_match else 90.0
-        else:
-            return None
-
-        angular_speed = DEFAULT_ROTATION_SPEED
-        if duration_match:
-            duration = float(duration_match.group(1))
-        else:
-            duration = math.radians(angle_deg) / angular_speed
-        return execute_direct_motion(
-            0.0,
-            0.0,
-            direction * angular_speed,
-            duration,
-            "Rotation command accepted: %s\nPublished avoid move command for %.2f seconds." % (
-                normalized,
-                duration,
-            ),
-        )
-
-    if any(token in lowered for token in FORWARD_GENERIC_KEYWORDS) and not any(token in lowered for token in ("back", "backward", "뒤로")):
-        speed = DEFAULT_LINEAR_SPEED
-        if duration_match:
-            duration = float(duration_match.group(1))
-        elif distance_match:
-            duration = float(distance_match.group(1)) / speed
-        else:
-            return None
-
-        return execute_direct_motion(
-            speed,
-            0.0,
-            0.0,
-            duration,
-            "Move command accepted: %s\nPublished avoid move command for %.2f seconds." % (
-                normalized,
-                duration,
-            ),
-        )
-
-    return None
-
-
-def is_long_horizon(query: str) -> bool:
-    lowered = query.strip().lower()
-    if any(kw in lowered for kw in LONG_HORIZON_KEYWORDS):
-        return True
-    if any(kw in lowered for kw in SEQUENCE_KEYWORDS):
-        action_count = sum(1 for p in LONG_HORIZON_ACTION_PATTERNS if re.search(p, lowered))
-        if action_count >= 2:
-            return True
-    return sum(1 for p in DIRECT_INTERNVLN_PATTERNS if re.search(p, lowered)) >= 2
-
-
 class GracefulInterruptHandler:
     """Context manager to handle interrupts gracefully."""
     
@@ -503,9 +264,7 @@ class ROS2Agent(ROSA):
         normalize_rosa_system_prompts_for_vllm(str(self.__prompts))
         self.__llm = get_llm(streaming=streaming)
         self._request_lock = threading.Lock()
-        self._task_planner = LLMTaskPlanner(
-            model_name=os.getenv("OPENAI_MODEL", "Qwen/Qwen3.5-4B")
-        )
+        self._task_planner = TaskPlanner()
 
         # self.__llm = ChatOllama(
         #     base_url="host.docker.internal:11434",
@@ -627,90 +386,40 @@ class ROS2Agent(ROSA):
         else:
             self.print_response(query)
 
-    def _check_client_status_text(self) -> str:
-        for candidate in (
-            lambda: check_client_status.invoke({}),
-            lambda: check_client_status.invoke(""),
-            lambda: check_client_status.run(""),
-            lambda: check_client_status.func(),
-        ):
-            try:
-                result = candidate()
-            except Exception:
-                continue
-            if result is not None:
-                return str(result)
-        return "Unable to determine client thread status."
-
-    def _wait_for_internvln_success(self, timeout: int = INTERNVLN_SUCCESS_TIMEOUT) -> bool:
-        deadline_start = time.time() + 10
-        started = False
-        while time.time() < deadline_start:
-            status = self._check_client_status_text()
-            if "on" in status.lower():
-                started = True
-                break
-            time.sleep(1.0)
-
-        if not started:
-            print("[Planner] Thread did not start within 10s, treating as done.", flush=True)
-            return True
-
-        deadline_end = time.time() + timeout
-        while time.time() < deadline_end:
-            status = self._check_client_status_text()
-            if "off" in status.lower():
-                return True
-            time.sleep(2.0)
-
-        print("[Planner] InternVLN task timed out.", flush=True)
-        return False
-
-    def _execute_planned_subtask(self, subtask: str):
-        direct_result = maybe_handle_direct_internvln_request(subtask)
-        if direct_result is not None:
-            success = self._wait_for_internvln_success()
-            return direct_result, success
-
-        direct_motion_result = maybe_handle_direct_motion_request(subtask)
-        if direct_motion_result is not None:
-            return direct_motion_result, True
-
-        response = self.invoke(build_instruction_query(subtask))
-        return response, True
-
     def _handle_planned_query(self, query: str) -> str:
-        subtasks = self._task_planner.decompose(query)
+        self._task_planner.start(decompose_instruction(self.__llm, query))
 
         results = []
-        while not self._task_planner.is_completed:
-            current = self._task_planner.get_current_instruction()
-            idx = self._task_planner.state.current_task_idx + 1
-            total = self._task_planner.state.total_tasks
+        total = len(self._task_planner.subtasks)
+        while not self._task_planner.completed:
+            current = self._task_planner.current_task()
+            if current is None:
+                break
 
+            idx = self._task_planner.current_idx + 1
             print(f"[Planner] [{idx}/{total}] {current}", flush=True)
 
-            response, success = self._execute_planned_subtask(current)
+            response = self.invoke(build_instruction_query(current))
             results.append(f"[{idx}/{total}] {response}")
 
-            if not success:
-                print(f"[Planner] Task {idx} timed out. Aborting.", flush=True)
-                results.append(f"[{idx}/{total}] TIMEOUT")
-                break
+            self._task_planner.mark_success()
 
-            next_task = self._task_planner.on_task_success()
-            if next_task is None:
-                print("[Planner] All subtasks completed.", flush=True)
-                break
+        if self._task_planner.completed:
+            print("[Planner] All subtasks completed.", flush=True)
 
         return "\n".join(results)
 
     def ask(self, query: str, stateless: bool = False):
+        if isinstance(query, str) and not stateless:
+            normalized = query.strip().lower()
+            stop_requested = any(re.search(pattern, normalized) for pattern in STOP_PATTERNS)
+            if normalized and stop_requested:
+                toggle_result = InternVLN._toggle_client_thread(False)
+                avoid_result = avoid_api.avoid_api_stop.func()
+                return "Stop accepted: %s\n%s\n%s" % (normalized, toggle_result, avoid_result)
+
         with self._request_lock:
             if isinstance(query, str) and not stateless:
-                stop_result = maybe_handle_direct_stop_request(query)
-                if stop_result is not None:
-                    return stop_result
                 return self._handle_planned_query(query)
 
             if isinstance(query, str):

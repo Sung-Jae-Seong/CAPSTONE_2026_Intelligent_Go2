@@ -1,23 +1,13 @@
 import json
 import os
 import subprocess
-import sys
-import textwrap
-import time as time_module
 
 from langchain.agents import tool
 
 
 REQUEST_TOPIC = "/api/obstacles_avoid/request"
 ROS_PYTHON = os.getenv("ROS_PYTHON", "/usr/bin/python3.8")
-ROS_SETUP_BASH = os.getenv(
-    "ROS_SETUP_BASH",
-    "/home/unitree/unitree_msg_ws/install/setup.bash",
-)
 WORKER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "avoid_api_worker.py")
-MATCH_TIMEOUT_SECONDS = 3.0
-PUBLISH_RATE_HZ = 10.0
-ONCE_PUBLISH_SECONDS = 0.3
 
 _worker_process = None
 
@@ -58,20 +48,13 @@ def _start_worker():
     if _worker_process is not None and _worker_process.poll() is None:
         return _worker_process
 
-    env = os.environ.copy()
-    env["PYTHONUNBUFFERED"] = "1"
     _worker_process = subprocess.Popen(
-        [
-            "/bin/bash",
-            "-lc",
-            f"source {ROS_SETUP_BASH} && exec {ROS_PYTHON} {WORKER_PATH}",
-        ],
+        [ROS_PYTHON, "-u", WORKER_PATH],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
         bufsize=1,
-        env=env,
     )
     return _worker_process
 
@@ -105,28 +88,24 @@ def _worker_request(payload):
     return False, response.get("error", "Unknown avoid worker error.")
 
 
-def _publish_message(message, duration_seconds):
+def ros2_publish_once(message, duration_seconds=0.3):
+    return ros2_publish_for(message, duration_seconds)
+
+
+def ros2_publish_for(message, seconds, rate_hz=10.0, match_timeout_seconds=3.0):
     success, response = _worker_request(
         {
             "cmd": "publish",
             "message": message,
-            "duration_seconds": float(duration_seconds),
-            "rate_hz": PUBLISH_RATE_HZ,
-            "match_timeout_seconds": MATCH_TIMEOUT_SECONDS,
+            "duration_seconds": float(seconds),
+            "rate_hz": rate_hz,
+            "match_timeout_seconds": match_timeout_seconds,
             "topic_name": REQUEST_TOPIC,
         }
     )
     if success:
         return ""
     return response
-
-
-def ros2_publish_once(message):
-    return _publish_message(message, ONCE_PUBLISH_SECONDS)
-
-
-def ros2_publish_for(message, seconds):
-    return _publish_message(message, float(seconds))
 
 
 def _ready_avoid():
