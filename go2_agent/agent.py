@@ -20,7 +20,6 @@ import re
 import signal
 import sys
 import threading
-from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import dotenv
@@ -45,9 +44,9 @@ from rosa import ROSA
 import rosa.prompts as rosa_base_prompts
 
 from help import get_help
-from llm import get_llm, decompose_instruction, TaskPlanner
+from llm import get_llm
 from prompts import get_prompts
-from tools import avoid_api, InternVLN, lidar_slam_tool
+from tools import avoid_api, InternVLN, lidar_slam_tool, task_planner
 
 instruction = ""
 POINTING_IMAGE_GOAL_KIND = "pointing_image_goal"
@@ -264,7 +263,6 @@ class ROS2Agent(ROSA):
         normalize_rosa_system_prompts_for_vllm(str(self.__prompts))
         self.__llm = get_llm(streaming=streaming)
         self._request_lock = threading.Lock()
-        self._task_planner = TaskPlanner()
 
         # self.__llm = ChatOllama(
         #     base_url="host.docker.internal:11434",
@@ -279,7 +277,7 @@ class ROS2Agent(ROSA):
             ros_version=2,
             llm=self.__llm,
             tools=[ros2_helper_tool],
-            tool_packages=[avoid_api, InternVLN, lidar_slam_tool],
+            tool_packages=[avoid_api, InternVLN, lidar_slam_tool, task_planner],
             blacklist=self.__blacklist,
             prompts=None,
             verbose=verbose,
@@ -386,42 +384,9 @@ class ROS2Agent(ROSA):
         else:
             self.print_response(query)
 
-    def _handle_planned_query(self, query: str) -> str:
-        self._task_planner.start(decompose_instruction(self.__llm, query))
-
-        results = []
-        total = len(self._task_planner.subtasks)
-        while not self._task_planner.completed:
-            current = self._task_planner.current_task()
-            if current is None:
-                break
-
-            idx = self._task_planner.current_idx + 1
-            print(f"[Planner] [{idx}/{total}] {current}", flush=True)
-
-            response = self.invoke(build_instruction_query(current))
-            results.append(f"[{idx}/{total}] {response}")
-
-            self._task_planner.mark_success()
-
-        if self._task_planner.completed:
-            print("[Planner] All subtasks completed.", flush=True)
-
-        return "\n".join(results)
-
     def ask(self, query: str, stateless: bool = False):
-        if isinstance(query, str) and not stateless:
-            normalized = query.strip().lower()
-            stop_requested = any(re.search(pattern, normalized) for pattern in STOP_PATTERNS)
-            if normalized and stop_requested:
-                toggle_result = InternVLN._toggle_client_thread(False)
-                avoid_result = avoid_api.avoid_api_stop.func()
-                return "Stop accepted: %s\n%s\n%s" % (normalized, toggle_result, avoid_result)
-
         with self._request_lock:
-            if isinstance(query, str) and not stateless:
-                return self._handle_planned_query(query)
-
+            InternVLN._vln_cancel.clear()
             if isinstance(query, str):
                 query = prepare_agent_query(query)
 

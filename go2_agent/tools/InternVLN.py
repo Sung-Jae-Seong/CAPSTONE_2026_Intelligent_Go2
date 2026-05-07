@@ -1,6 +1,7 @@
 import os
 import subprocess
 import termios
+import threading
 import requests
 
 from langchain.agents import tool
@@ -11,6 +12,7 @@ THREAD_STATE_TOPIC = "/thread_state"
 TOGGLE_THREAD_SERVICE = "/toggle_run_threads"
 SET_BOOL_SERVICE_TYPE = "std_srvs/srv/SetBool"
 THREAD_STATE_TIMEOUT = 3.0
+_vln_cancel = threading.Event()
 
 
 def _save_terminal_state():
@@ -42,12 +44,8 @@ def _toggle_client_thread(enable):
     return "Requested client thread on." if enable else "Requested client thread off."
 
 
-@tool
-def check_client_status() -> str:
-    """Check the InternVLN client thread status from /thread_state.
-    if status is false you can turn on the client thread to execute the high-level tools for vln server."""
+def _check_thread_state_raw() -> str:
     tty_fd, tty_state = _save_terminal_state()
-    timed_out = False
     try:
         with open(os.devnull, "r") as devnull:
             result = subprocess.run(
@@ -60,19 +58,47 @@ def check_client_status() -> str:
             )
             output = f"{result.stdout}\n{result.stderr}"
     except subprocess.TimeoutExpired as exc:
-        timed_out = True
         output = f"{exc.stdout or ''}\n{exc.stderr or ''}"
     finally:
         _restore_terminal_state(tty_fd, tty_state)
 
-    output = output.lower()
+    return output.lower()
+
+
+@tool
+def check_client_status() -> str:
+    """Check the InternVLN client thread status from /thread_state.
+    if status is false you can turn on the client thread to execute the high-level tools for vln server."""
+    output = _check_thread_state_raw()
     if "data: true" in output:
         return "Client thread is on."
     if "data: false" in output:
         return "Client thread is off."
-    if not timed_out and output.strip():
+    if output.strip():
         return output.strip()
     return "Unable to determine client thread status."
+
+
+def _wait_for_internvln_success() -> bool:
+    started = False
+    for _ in range(10):
+        if _vln_cancel.is_set():
+            return False
+        output = _check_thread_state_raw()
+        if "data: true" in output:
+            started = True
+            break
+
+    if not started:
+        return False
+
+    while not _vln_cancel.is_set():
+        output = _check_thread_state_raw()
+        if "data: false" in output:
+            return True
+
+    return False
+
 
 def _set_command(command):
     r = requests.post(
@@ -87,6 +113,7 @@ def _set_command(command):
         return output
     return f"Error: failed to update instruction ({r.status_code})"
 
+
 @tool
 def client_thread_on(command) -> str:
     """Enable the InternVLN client control/planning threads.
@@ -97,7 +124,10 @@ def client_thread_on(command) -> str:
     error = _set_command(command)
     if error:
         return error
-    return _toggle_client_thread(True)
+    _vln_cancel.clear()
+    _toggle_client_thread(True)
+    success = _wait_for_internvln_success()
+    return "Navigation complete." if success else "Navigation cancelled."
 
 
 @tool

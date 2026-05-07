@@ -130,10 +130,11 @@ def ready_avoid() -> str:
 @tool
 def avoid_api_move(x: float, y: float, z: float, time: float) -> str:
     """
-    Move Go2 with obstacle avoidance API for a short duration.
-    x: forward velocity
-    y: lateral velocity
-    z: yaw velocity
+    Move Go2 for a short duration.
+    if user wants to move or turn with x,y,z parameters, use this function.
+    x: forward velocity (m/s)
+    y: lateral velocity (m/s)
+    z: yaw velocity (radians/s)
     time: movement duration in seconds
     """
     seconds = float(time)
