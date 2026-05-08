@@ -20,6 +20,10 @@ import re
 import signal
 import sys
 import threading
+
+# ######### log ##########
+from datetime import datetime
+# ######### log ##########
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import dotenv
@@ -281,7 +285,7 @@ class ROS2Agent(ROSA):
             blacklist=self.__blacklist,
             prompts=None,
             verbose=verbose,
-            accumulate_chat_history=True,
+            accumulate_chat_history=False,
             streaming=streaming,
         )
         try:
@@ -590,6 +594,18 @@ def start_http_server(agent):
 
 def main(streaming: bool = False):
     dotenv.load_dotenv(dotenv.find_dotenv())
+
+    # ######### log ##########
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    log_dir = os.path.join(
+        project_root,
+        "logs",
+        f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{os.getpid()}",
+    )
+    os.makedirs(log_dir, exist_ok=True)
+    os.environ["ROSA_RAW_LLM_LOG_DIR"] = log_dir
+    print(f"[ROSA RAW LLM LOG DIR] {log_dir}", flush=True)
+    # ######### log ##########
 
     ros2_agent = ROS2Agent(verbose=False, streaming=streaming)
     http_server = None

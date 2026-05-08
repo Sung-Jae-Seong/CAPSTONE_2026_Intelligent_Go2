@@ -7,3 +7,4 @@ memo
 *__pycache__/*
 tools/__pycache__/
 Thirdparty/*
+logs/*

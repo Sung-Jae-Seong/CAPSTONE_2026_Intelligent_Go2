@@ -1,6 +1,7 @@
 import json
 import os
 import subprocess
+import time as _time
 
 from langchain.agents import tool
 
@@ -130,16 +131,16 @@ def ready_avoid() -> str:
 @tool
 def avoid_api_move(x: float, y: float, z: float, time: float) -> str:
     """
-    Move Go2 for a short duration.
+    Move or turn Go2 for a short duration.
     if user wants to move or turn with x,y,z parameters, use this function.
-    x: forward velocity (m/s)
-    y: lateral velocity (m/s)
-    z: yaw velocity (radians/s)
+    x: forward velocity (m/s). Positive = forward, Negative = backward.
+    y: lateral velocity (m/s). Positive = move left, Negative = move right.
+    z: yaw angular velocity (rad/s). Positive = turn LEFT (counterclockwise). Negative = turn RIGHT (clockwise).
     time: movement duration in seconds
     """
     seconds = float(time)
     if seconds <= 0.0:
-        return "time must be positive seconds."
+        return "time must be positive seconds."    
 
     error = ros2_publish_for(avoid_move_message(x, y, z), seconds)
     if error:
@@ -147,6 +148,10 @@ def avoid_api_move(x: float, y: float, z: float, time: float) -> str:
     error = ros2_publish_once(avoid_move_message(0.0, 0.0, 0.0))
     if error:
         return error
+    
+    # if z != 0.0:
+    #     _time.sleep(1.0)
+    
     return "Published avoid move command for %s seconds." % seconds
 
 

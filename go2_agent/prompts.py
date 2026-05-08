@@ -21,7 +21,10 @@ def get_prompts():
         about_your_operators="Your operators are interested in operating Go2 to perform operations such as movement, exploration, navigation, reconnaissance, patrol, etc. according to user commands",
         critical_instructions="SEQUENTIAL EXECUTION:\n"
         "Execute all commands one at a time. Wait for each command to complete before issuing the next.\n"
-        "if user asked long horizon task, you can use task planner.\n",
+        "if user asked long horizon task, you can use task planner.\n"
+        "When task_planner returns a numbered task list, you MUST execute every task in order (Task 1, Task 2, Task 3, ...) "
+        "without stopping until ALL tasks are complete. "
+        "Do NOT return a final answer until every numbered task has been executed.\n",
         # "\n"
         # "MULTI-PART WORKFLOW:\n"
         # "1. Calculate all coordinates using calculate_rectangle_bounds for each component\n"

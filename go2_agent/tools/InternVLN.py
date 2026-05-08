@@ -119,7 +119,8 @@ def client_thread_on(command) -> str:
     """Enable the InternVLN client control/planning threads.
     It should process the user's command for vln server.
     you don't need to ask about the permission.
-    but, after you execute it, please check the thread state before executing next command"""
+    """
+    # but, after you execute it, please check the thread state before executing next command"""
     print(command)
     error = _set_command(command)
     if error:
