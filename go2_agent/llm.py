@@ -38,9 +38,11 @@ def get_llm(streaming: bool = False):
 
     if provider == "openai":
         llm = ChatOpenAI(
-            api_key=get_env_variable("OPENAI_API_KEY"),
+            api_key=os.getenv("OPENAI_API_KEY", "EMPTY"),
             base_url=os.getenv("OPENAI_BASE_URL"),
             model=os.getenv("OPENAI_MODEL", "Qwen/Qwen3.5-4B"),
+            # base_url=os.getenv("OPENAI_BASE_URL", "http://203.246.113.62:8000/v1"),
+            # model=os.getenv("OPENAI_MODEL", "Qwen/Qwen3.5-9B"),
             temperature=0,
             extra_body={"chat_template_kwargs": {"enable_thinking": False}},
             streaming=streaming,

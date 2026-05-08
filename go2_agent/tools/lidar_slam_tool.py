@@ -32,6 +32,33 @@ def _path_length(points):
 
 
 @tool
+def get_lidar_slam_timestamp() -> dict:
+    """
+    Return the latest timestamp recorded by lidar_slam_runner.
+    This does not move the robot.
+    """
+    success, output = execute_ros_command(
+        "timeout 2 ros2 service call /lidar_slam_runner/backtracking "
+        "std_srvs/srv/Trigger"
+    )
+    if not success:
+        return {"success": False, "error": output}
+
+    payload = _trigger_payload(output)
+    timestamp = payload.get("latest_selected_stamp")
+    if payload.get("success") and timestamp is not None:
+        return {"success": True, "timestamp": timestamp}
+
+    if timestamp is None:
+        return {
+            "success": False,
+            "error": payload.get("error", "latest_selected_stamp missing."),
+        }
+
+    return {"success": False, "error": payload.get("error", "unknown error")}
+
+
+@tool
 def get_trajectory(seconds: float) -> dict:
     """
     Return a sparse backtracking trajectory and derived motion summary.

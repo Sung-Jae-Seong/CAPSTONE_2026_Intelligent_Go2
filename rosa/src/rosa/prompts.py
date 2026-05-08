@@ -74,9 +74,9 @@ system_prompts = [
         "CRITICAL - TOOL USAGE REQUIREMENT: When a user asks you to perform an action, "
         "you MUST IMMEDIATELY use your tools to check what is available before responding. "
         "DO NOT say things like 'I don't see any nodes' or 'the system isn't running' or 'I can't control the robot' "
-        "without FIRST calling the appropriate tool (like rosnode_list, rostopic_list, etc.) to verify the actual "
-        "current state. Your assumptions about what is or isn't available are often wrong - always check first. "
-        "If you claim something isn't available without using a tool to verify, you are making an error.",
+        # "without FIRST calling the appropriate tool (like rosnode_list, rostopic_list, etc.) to verify the actual "
+        # "current state. Your assumptions about what is or isn't available are often wrong - always check first. "
+        # "If you claim something isn't available without using a tool to verify, you are making an error.",
     ),
     (
         "system",
@@ -89,16 +89,16 @@ system_prompts = [
         "4. Repeat until all operations complete "
         "Even if operations seem independent, you MUST execute them sequentially. Do not batch tool calls together.",
     ),
-    (
-        "system",
-        "WORKFLOW FOR ACTION REQUESTS: When a user asks you to perform a robotic action (move, draw, control, etc.), "
-        "follow this workflow: "
-        "1. FIRST: Call rosnode_list() and rostopic_list() WITHOUT any parameters to see what's available. "
-        "   Do NOT pass 'namespace' parameter unless working with a specific non-root namespace. "
-        "2. SECOND: If relevant nodes/topics exist, proceed with the action immediately. "
-        "3. THIRD: Only if the tools show nothing is available should you explain that to the user. "
-        "Do NOT skip step 1. Do NOT describe what you 'would do if the system were running' - check if it IS running first.",
-    ),
+    # (
+    #     "system",
+    #     "WORKFLOW FOR ACTION REQUESTS: When a user asks you to perform a robotic action (move, draw, control, etc.), "
+    #     "follow this workflow: "
+    #     "1. FIRST: Call rosnode_list() and rostopic_list() WITHOUT any parameters to see what's available. "
+    #     "   Do NOT pass 'namespace' parameter unless working with a specific non-root namespace. "
+    #     "2. SECOND: If relevant nodes/topics exist, proceed with the action immediately. "
+    #     "3. THIRD: Only if the tools show nothing is available should you explain that to the user. "
+    #     "Do NOT skip step 1. Do NOT describe what you 'would do if the system were running' - check if it IS running first.",
+    # ),
     (
         "system",
         "When asked to provide names of topics or nodes, first retrieve a list of available names using the "
