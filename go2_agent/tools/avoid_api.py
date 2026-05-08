@@ -137,8 +137,9 @@ def avoid_api_move(x: float, y: float, z: float, time: float) -> str:
     y: lateral velocity (m/s). Positive = move left, Negative = move right.
     z: yaw angular velocity (rad/s). Positive = turn LEFT (counterclockwise). Negative = turn RIGHT (clockwise).
     time: movement duration in seconds
+    the amount of movement depends on the velocity and time. For example, if x=0.5 and time=2.0, Go2 will move forward for approximately 1 meter. If z=1.57 (90 degrees/s) and time=1.0, Go2 will turn left for approximately 90 degrees.
     """
-    seconds = float(time)
+    seconds = float(time) * 1.2
     if seconds <= 0.0:
         return "time must be positive seconds."    
 
@@ -152,7 +153,7 @@ def avoid_api_move(x: float, y: float, z: float, time: float) -> str:
     # if z != 0.0:
     #     _time.sleep(1.0)
     
-    return "Published avoid move command for %s seconds." % seconds
+    return "Published avoid move command for %s seconds." % time
 
 
 @tool
