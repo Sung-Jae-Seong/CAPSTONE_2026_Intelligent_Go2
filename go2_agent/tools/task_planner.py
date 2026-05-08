@@ -71,11 +71,18 @@ def format_subtasks(subtasks: List[str]) -> str:
 
 @tool
 def task_planner(instruction: str) -> str:
+    # """
+    # Break a complex long-horizon or multi-step Go2 robot instruction into atomic subtasks.
+    # Use this before executing requests that contain multiple ordered goals, locations, or actions.
+    # Do not use this for simple one-step movement, stop/status requests, or ordinary conversation.
+    # After this returns, execute the numbered tasks one at a time in order.
+    # """
     """
-    Break a complex long-horizon or multi-step Go2 robot instruction into atomic subtasks.
-    Use this before executing requests that contain multiple ordered goals, locations, or actions.
-    Do not use this for simple one-step movement, stop/status requests, or ordinary conversation.
-    After this returns, execute the numbered tasks one at a time in order.
+    Break any multi-step Go2 robot instruction into atomic subtasks.
+	Use this before executing any request that contains more than one ordered action, goal, or location, even if the request is short or simple.
+	Examples that require this tool: "go 1m and turn right 90 degrees", "move forward then sit", "go to the door and turn around".
+	Do not use this for single-action movement, stop/status requests, or ordinary conversation.
+	After this returns, execute the numbered tasks one at a time in order.
     """
     try:
         subtasks = decompose_instruction(get_planner_llm(), instruction)
